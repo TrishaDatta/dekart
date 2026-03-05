@@ -14,6 +14,7 @@ use crate::{
         zeromorph::{replay_challenges, zeta_z_com, Zeromorph, ZeromorphProverKey},
         EvaluationSet,
     },
+    pvss::chunky::chunked_elgamal::correlated_randomness,
     range_proofs::{dekart_univariate_v2::two_term_msm, traits, PublicStatement},
     sigma_protocol::{
         homomorphism::{Trait as _, TrivialShape},
@@ -173,7 +174,7 @@ impl<E: Pairing> traits::BatchedRangeProof<E> for Proof<E> {
         // Layout: coeffs[0]=β, coeffs[1..=n]=values, rest zero. Size = smallest 2^m with 2^m ≥ n+1.
         let size = (values.len() + 1).next_power_of_two();
         let mut coeffs = Vec::with_capacity(size);
-        coeffs.push(E::ScalarField::ZERO);
+        coeffs.push(E::ScalarField::ZERO); // so it's always zero
         coeffs.extend_from_slice(values);
         coeffs.resize(size, E::ScalarField::ZERO);
         univariate_hiding_kzg::commit_with_randomness(ck, &coeffs, rho)
@@ -298,7 +299,7 @@ impl<E: Pairing> traits::BatchedRangeProof<E> for Proof<E> {
         #[cfg(feature = "range_proof_timing_multivariate")]
         let start = Instant::now();
 
-        // Step 4: (y_f - sum 2^{j-1} y_j + sum c^j y_j(1-y_j)) * eq_c_zc(x) * Z_0(x) + alpha * y_g == h_m(x_m)
+        // Step 4a: (sum c^j y_j(1-y_j)) * eq_c_zc(x) * Z_0(x) + alpha * y_g == h_m(x_m)
         // BinaryConstraintPolynomial uses (1 - eq_0) with eq_0 = ∏ᵢ(1-Xᵢ); Z_0 = 1 - eq_0 (vanishes at (0,...,0)).
         // Use the same variable order as the sumcheck prover: subclaim.point is (x_0,…,x_{m-1}) with x_i
         // from round i+1; eq_point c_zc is indexed to match. So we use x as-is for eq and Z_0. // OLD comment: // DenseMultilinearExtension in ark_poly uses index = sum_i b_i * 2^i with b_0 LSB, so var 0 = LSB. Match that.
@@ -312,24 +313,32 @@ impl<E: Pairing> traits::BatchedRangeProof<E> for Proof<E> {
         let eq_zero_at_x: E::ScalarField = x.iter().map(|&xi| E::ScalarField::ONE - xi).product();
         let Z_0_at_x = E::ScalarField::ONE - eq_zero_at_x;
 
-        let two = E::ScalarField::from(2u64);
-        let mut pow2 = E::ScalarField::ONE; // TODO: can precompute these powers
-        let mut sum_weighted_y = self.y_f;
-        for (_, &y_j) in self.y_js.iter().enumerate().take(ell as usize) {
-            sum_weighted_y -= pow2 * y_j;
-            pow2 *= two;
-        }
+        let mut sum_c_j_y_j_one_minus_y_j = E::ScalarField::ZERO;
         let mut c_pow = c;
         for &y_j in self.y_js.iter().take(ell as usize) {
-            sum_weighted_y += c_pow * y_j * (E::ScalarField::ONE - y_j);
+            sum_c_j_y_j_one_minus_y_j += c_pow * y_j * (E::ScalarField::ONE - y_j);
             c_pow *= c;
         }
-        let lhs = sum_weighted_y * eq_c_zc_at_x * Z_0_at_x + alpha * self.y_g;
-        if lhs != subclaim.expected_evaluation {
+        let lhs_4a = sum_c_j_y_j_one_minus_y_j * eq_c_zc_at_x * Z_0_at_x + alpha * self.y_g;
+        if lhs_4a != subclaim.expected_evaluation {
             return Err(anyhow::anyhow!(
-                "Step 4 check failed: (y_f - sum 2^(j-1) y_j + sum c^j y_j(1-y_j)) * eq_c_zc(x) * Z_0(x) + alpha*y_g != h(x). \
+                "Step 4a check failed: (sum c^j y_j(1-y_j)) * eq_c_zc(x) * Z_0(x) + alpha*y_g != h(x). \
                  Check transcript order (vk, C, n, ell, C_fj, C_gi, H_g, c, alpha, c_zc), \
-                 that y_f/y_js/y_g are f(x)/f_j(x)/g(x) at subclaim.point, and sumcheck variable order."
+                 that y_js/y_g are f_j(x)/g(x) at subclaim.point, and sumcheck variable order."
+            ));
+        }
+
+        // Step 4b: y_f - sum_{j=1}^ℓ 2^{j-1} y_j == 0 (correlated masks)
+        let two = E::ScalarField::from(2u64);
+        let mut pow2 = E::ScalarField::ONE;
+        let mut sum_2j_minus_1_y_j = E::ScalarField::ZERO;
+        for &y_j in self.y_js.iter().take(ell as usize) {
+            sum_2j_minus_1_y_j += pow2 * y_j;
+            pow2 *= two;
+        }
+        if self.y_f != sum_2j_minus_1_y_j {
+            return Err(anyhow::anyhow!(
+                "Step 4b check failed: y_f - sum_{j=1}^ℓ 2^{j-1} y_j != 0 (correlated masks)."
             ));
         }
         #[cfg(feature = "range_proof_timing_multivariate")]
@@ -543,8 +552,9 @@ pub fn prove_impl<E: Pairing, R: RngCore + CryptoRng>(
     let bits = scalars_to_bits::scalars_to_bits_le(values, ell);
     let f_j_evals_without_r = scalars_to_bits::transpose_bit_matrix(&bits);
 
-    // Step 3b: Sample masks β_j independently (no correlated randomness)
-    let betas: Vec<E::ScalarField> = sample_field_elements(ell as usize, rng);
+    // Step 3b: Sample correlated masks β_1,…,β_ℓ with β = Σ_{j=1}^ℓ 2^{j-1} β_j
+    let betas: Vec<E::ScalarField> =
+        correlated_randomness(rng, 2, u32::from(ell), &beta);
 
     // Step 3c: Construct f_j
     let size = (values.len() + 1).next_power_of_two();
@@ -667,7 +677,6 @@ pub fn prove_impl<E: Pairing, R: RngCore + CryptoRng>(
         ell as usize,
         c,
         alpha,
-        &f_evals,
         &f_j_evals,
         #[cfg(feature = "range_proof_timing_multivariate")]
         Some(&mut print_cumulative),
@@ -873,8 +882,8 @@ pub fn prove_impl<E: Pairing, R: RngCore + CryptoRng>(
     }
 }
 
-/// Run sumcheck on the main transcript with linear term (f - sum 2^{j-1} f_j) and constraints c^j f_j(f_j-1).
-/// Draws eq_point t from trs, then runs MLSumcheck::prove_as_subprotocol with TranscriptRng.
+/// Run sumcheck on (Σ c^j f_j(1-f_j)) Z_0 + α g only (correlated masks: f - Σ 2^{j-1} f_j is zero on hypercube, checked in Step 4b).
+/// Draws eq_point c_zc from trs, then runs MLSumcheck::prove_as_subprotocol with TranscriptRng.
 #[allow(clippy::type_complexity)]
 #[allow(unused_mut)]
 #[allow(unused_variables)]
@@ -885,7 +894,6 @@ fn zkzc_send_polys<E: Pairing>(
     ell: usize,
     c: E::ScalarField,
     alpha: E::ScalarField,
-    f_evals: &[E::ScalarField],
     hat_f_j_evals: &[Vec<E::ScalarField>],
     mut timing: Option<&mut dyn FnMut(&str, std::time::Duration)>,
 ) -> (
@@ -897,22 +905,9 @@ fn zkzc_send_polys<E: Pairing>(
     // Spec: eq point c_zc for zerocheck; must match verifier's challenge_point(dimension)
     let c_zc = <merlin::Transcript as RangeProof<E, Proof<E>>>::challenge_point(trs, num_vars);
     let nv = num_vars as usize;
-    let size = 1 << nv;
-
-    // Linear term L = f - sum_{j=0..ell-1} 2^j hat_f_j (indices: hat_f_j_evals[j] is f_{j+1})
-    let two = E::ScalarField::from(2u64);
-    let mut pow2 = E::ScalarField::ONE;
-    let mut linear_evals = f_evals.to_vec();
-    for j in 0..ell {
-        for (i, l) in linear_evals.iter_mut().enumerate().take(size) {
-            *l -= pow2 * hat_f_j_evals[j][i];
-        }
-        pow2 *= two;
-    }
-    let linear_term = DenseMultilinearExtension::from_evaluations_vec(nv, linear_evals);
     #[cfg(feature = "range_proof_timing_multivariate")]
     if let Some(ref mut f) = timing {
-        f("zkzc_send_polys: eq_point t + linear_term", start.elapsed());
+        f("zkzc_send_polys: eq_point c_zc", start.elapsed());
     }
 
     #[cfg(feature = "range_proof_timing_multivariate")]
@@ -920,7 +915,7 @@ fn zkzc_send_polys<E: Pairing>(
     let mut poly = crate::sumcheck::ml_sumcheck::data_structures::BinaryConstraintPolynomial::new(
         nv, c_zc, alpha, g_is,
     );
-    poly.set_linear_term(linear_term);
+    // No linear term: with correlated randomness we prove only (Σ c^j f_j(1-f_j)) Z_0 + α g; Step 4b checks y_f = Σ 2^{j-1} y_j.
     let mut c_j = c;
     for j in 0..ell {
         let f_hat_j = DenseMultilinearExtension::from_evaluations_vec(nv, hat_f_j_evals[j].clone());
