@@ -7,6 +7,7 @@
 #![allow(missing_docs)]
 #![allow(non_snake_case)]
 
+pub mod booleanity_eq;
 mod dense_poly;
 mod field;
 mod gaussian_elimination;
@@ -19,6 +20,9 @@ mod unipoly;
 pub mod product4;
 pub mod traits;
 
+pub use booleanity_eq::{
+    BooleanityEqParams, BooleanityEqSumcheckProver, BooleanityEqSumcheckVerifier,
+};
 pub use dense_poly::{BindingOrder, DensePolynomial};
 pub use field::SumcheckField;
 pub use masking::{expand_seed_to_field, MaskingPolynomial};
