@@ -15,12 +15,13 @@ extern crate criterion;
 
 use aptos_crypto::sumcheck::{
     BatchedSumcheck, BindingOrder, BooleanityEqSumcheckProver, BooleanityEqSumcheckVerifier,
-    DensePolynomial, KeccakSumcheckTranscript, MaskingPolynomial, ProverOpeningAccumulator,
+    DensePolynomial, MaskingPolynomial, MerlinSumcheckTranscript, ProverOpeningAccumulator,
     SumcheckInstanceParams, SumcheckInstanceProver, SumcheckInstanceVerifier, UniPoly,
     VerifierOpeningAccumulator,
 };
 use ark_bn254::Fr;
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
+use merlin::Transcript;
 use rand::{rngs::StdRng, RngCore, SeedableRng};
 
 /// Minimal sumcheck instance: proves sum_x MLE(x) = claim for one dense MLE (degree-1 rounds).
@@ -188,7 +189,8 @@ fn aptos_sumcheck_prove_bench(c: &mut Criterion) {
                 let evals = random_evals(nv, &mut rng);
                 let mut prover = SimpleMleSumcheckProver::new(nv, evals);
                 let mut opening = ProverOpeningAccumulator::new(0);
-                let mut transcript = KeccakSumcheckTranscript::new(b"AptosSumcheckBench");
+                let mut transcript_inner = Transcript::new(b"AptosSumcheckBench");
+                let mut transcript = MerlinSumcheckTranscript::new(&mut transcript_inner);
                 let (proof, _challenges, _claim) =
                     BatchedSumcheck::prove(vec![&mut prover], &mut opening, &mut transcript);
                 black_box(proof);
@@ -205,13 +207,15 @@ fn aptos_sumcheck_verify_bench(c: &mut Criterion) {
             let evals = random_evals(nv, &mut rng);
             let mut prover = SimpleMleSumcheckProver::new(nv, evals.clone());
             let mut opening_p = ProverOpeningAccumulator::new(0);
-            let mut transcript_p = KeccakSumcheckTranscript::new(b"AptosSumcheckBench");
+            let mut transcript_p_inner = Transcript::new(b"AptosSumcheckBench");
+            let mut transcript_p = MerlinSumcheckTranscript::new(&mut transcript_p_inner);
             let (proof, _challenges, _claim) =
                 BatchedSumcheck::prove(vec![&mut prover], &mut opening_p, &mut transcript_p);
             let verifier = SimpleMleSumcheckVerifier::with_poly(nv, evals);
             b.iter(|| {
                 let mut opening_v = VerifierOpeningAccumulator::new(0, false);
-                let mut transcript_v = KeccakSumcheckTranscript::new(b"AptosSumcheckBench");
+                let mut transcript_v_inner = Transcript::new(b"AptosSumcheckBench");
+                let mut transcript_v = MerlinSumcheckTranscript::new(&mut transcript_v_inner);
                 let result = BatchedSumcheck::verify_standard(
                     &proof,
                     vec![&verifier],
@@ -233,7 +237,8 @@ fn aptos_sumcheck_prove_degree4_bench(c: &mut Criterion) {
                 let evals = random_evals_4(nv, &mut rng);
                 let mut prover = Product4SumcheckProver::new(nv, evals);
                 let mut opening = ProverOpeningAccumulator::new(0);
-                let mut transcript = KeccakSumcheckTranscript::new(b"AptosSumcheckBench");
+                let mut transcript_inner = Transcript::new(b"AptosSumcheckBench");
+                let mut transcript = MerlinSumcheckTranscript::new(&mut transcript_inner);
                 let (proof, _challenges, _claim) =
                     BatchedSumcheck::prove(vec![&mut prover], &mut opening, &mut transcript);
                 black_box(proof);
@@ -250,13 +255,15 @@ fn aptos_sumcheck_verify_degree4_bench(c: &mut Criterion) {
             let evals = random_evals_4(nv, &mut rng);
             let mut prover = Product4SumcheckProver::new(nv, evals.clone());
             let mut opening_p = ProverOpeningAccumulator::new(0);
-            let mut transcript_p = KeccakSumcheckTranscript::new(b"AptosSumcheckBench");
+            let mut transcript_p_inner = Transcript::new(b"AptosSumcheckBench");
+            let mut transcript_p = MerlinSumcheckTranscript::new(&mut transcript_p_inner);
             let (proof, _challenges, _claim) =
                 BatchedSumcheck::prove(vec![&mut prover], &mut opening_p, &mut transcript_p);
             let verifier = Product4SumcheckVerifier::with_polys(nv, evals);
             b.iter(|| {
                 let mut opening_v = VerifierOpeningAccumulator::new(0, false);
-                let mut transcript_v = KeccakSumcheckTranscript::new(b"AptosSumcheckBench");
+                let mut transcript_v_inner = Transcript::new(b"AptosSumcheckBench");
+                let mut transcript_v = MerlinSumcheckTranscript::new(&mut transcript_v_inner);
                 let result = BatchedSumcheck::verify_standard(
                     &proof,
                     vec![&verifier],
@@ -285,7 +292,8 @@ fn aptos_sumcheck_prove_degree4_masking_bench(c: &mut Criterion) {
                     let g = MaskingPolynomial::<Fr>::from_seed(seed, nv, DEGREE);
                     let mut prover = Product4SumcheckProver::new_with_masking(nv, evals, g);
                     let mut opening = ProverOpeningAccumulator::new(0);
-                    let mut transcript = KeccakSumcheckTranscript::new(b"AptosSumcheckBench");
+                    let mut transcript_inner = Transcript::new(b"AptosSumcheckBench");
+                    let mut transcript = MerlinSumcheckTranscript::new(&mut transcript_inner);
                     let (proof, _challenges, _claim) =
                         BatchedSumcheck::prove(vec![&mut prover], &mut opening, &mut transcript);
                     black_box(proof);
@@ -310,13 +318,15 @@ fn aptos_sumcheck_verify_degree4_masking_bench(c: &mut Criterion) {
                 let mut prover =
                     Product4SumcheckProver::new_with_masking(nv, evals.clone(), g.clone());
                 let mut opening_p = ProverOpeningAccumulator::new(0);
-                let mut transcript_p = KeccakSumcheckTranscript::new(b"AptosSumcheckBench");
+                let mut transcript_p_inner = Transcript::new(b"AptosSumcheckBench");
+                let mut transcript_p = MerlinSumcheckTranscript::new(&mut transcript_p_inner);
                 let (proof, _challenges, _claim) =
                     BatchedSumcheck::prove(vec![&mut prover], &mut opening_p, &mut transcript_p);
                 let verifier = Product4SumcheckVerifier::with_polys_and_masking(nv, evals, g);
                 b.iter(|| {
                     let mut opening_v = VerifierOpeningAccumulator::new(0, false);
-                    let mut transcript_v = KeccakSumcheckTranscript::new(b"AptosSumcheckBench");
+                    let mut transcript_v_inner = Transcript::new(b"AptosSumcheckBench");
+                    let mut transcript_v = MerlinSumcheckTranscript::new(&mut transcript_v_inner);
                     let result = BatchedSumcheck::verify_standard(
                         &proof,
                         vec![&verifier],
@@ -343,7 +353,8 @@ fn aptos_sumcheck_prove_booleanity_eq_bench(c: &mut Criterion) {
                 let t = random_t(nv, &mut rng);
                 let mut prover = BooleanityEqSumcheckProver::new(nv, mle_evals, c, t);
                 let mut opening = ProverOpeningAccumulator::new(0);
-                let mut transcript = KeccakSumcheckTranscript::new(b"AptosSumcheckBench");
+                let mut transcript_inner = Transcript::new(b"AptosSumcheckBench");
+                let mut transcript = MerlinSumcheckTranscript::new(&mut transcript_inner);
                 let (proof, _challenges, _claim) =
                     BatchedSumcheck::prove(vec![&mut prover], &mut opening, &mut transcript);
                 black_box(proof);
@@ -362,13 +373,15 @@ fn aptos_sumcheck_verify_booleanity_eq_bench(c: &mut Criterion) {
             let t = random_t(nv, &mut rng);
             let mut prover = BooleanityEqSumcheckProver::new(nv, mle_evals.clone(), c, t.clone());
             let mut opening_p = ProverOpeningAccumulator::new(0);
-            let mut transcript_p = KeccakSumcheckTranscript::new(b"AptosSumcheckBench");
+            let mut transcript_p_inner = Transcript::new(b"AptosSumcheckBench");
+            let mut transcript_p = MerlinSumcheckTranscript::new(&mut transcript_p_inner);
             let (proof, _challenges, _claim) =
                 BatchedSumcheck::prove(vec![&mut prover], &mut opening_p, &mut transcript_p);
             let verifier = BooleanityEqSumcheckVerifier::new(nv, mle_evals, c, t);
             b.iter(|| {
                 let mut opening_v = VerifierOpeningAccumulator::new(0, false);
-                let mut transcript_v = KeccakSumcheckTranscript::new(b"AptosSumcheckBench");
+                let mut transcript_v_inner = Transcript::new(b"AptosSumcheckBench");
+                let mut transcript_v = MerlinSumcheckTranscript::new(&mut transcript_v_inner);
                 let result = BatchedSumcheck::verify_standard(
                     &proof,
                     vec![&verifier],

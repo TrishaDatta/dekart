@@ -13,10 +13,10 @@ mod dense_poly;
 mod field;
 mod gaussian_elimination;
 mod masking;
+mod merlin_transcript;
 mod opening;
 mod protocol;
 mod transcript;
-mod merlin_transcript;
 mod unipoly;
 
 pub mod product4;
@@ -32,12 +32,12 @@ pub use booleanity_eq_lsb::{
 pub use dense_poly::{BindingOrder, DensePolynomial};
 pub use field::SumcheckField;
 pub use masking::{expand_seed_to_field, MaskingPolynomial};
+pub use merlin_transcript::MerlinSumcheckTranscript;
 pub use opening::{ProverOpeningAccumulator, VerifierOpeningAccumulator};
 pub use product4::{Product4SumcheckProver, Product4SumcheckVerifier};
 pub use protocol::{BatchedSumcheck, ClearSumcheckProof};
 pub use traits::{
     OpeningAccumulator, SumcheckInstanceParams, SumcheckInstanceProver, SumcheckInstanceVerifier,
 };
-pub use merlin_transcript::MerlinSumcheckTranscript;
-pub use transcript::{KeccakSumcheckTranscript, SumcheckTranscript};
+pub use transcript::SumcheckTranscript;
 pub use unipoly::{CompressedUniPoly, UniPoly};

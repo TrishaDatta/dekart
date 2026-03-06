@@ -248,11 +248,12 @@ impl<F: SumcheckField> SumcheckInstanceVerifier<F> for Product4SumcheckVerifier<
 mod tests {
     use super::*;
     use crate::sumcheck::{
-        protocol::BatchedSumcheck, transcript::KeccakSumcheckTranscript, ProverOpeningAccumulator,
+        protocol::BatchedSumcheck, MerlinSumcheckTranscript, ProverOpeningAccumulator,
         VerifierOpeningAccumulator,
     };
     use ark_bn254::Fr;
     use ark_ff::{One, Zero};
+    use merlin::Transcript;
 
     #[test]
     fn product4_sumcheck_prove_verify() {
@@ -270,8 +271,10 @@ mod tests {
 
         let mut prover_acc = ProverOpeningAccumulator::<Fr>::new(0);
         let mut verifier_acc = VerifierOpeningAccumulator::<Fr>::new(0, false);
-        let mut transcript_p = KeccakSumcheckTranscript::new(b"test_sumcheck");
-        let mut transcript_v = KeccakSumcheckTranscript::new(b"test_sumcheck");
+        let mut transcript_p_inner = Transcript::new(b"test_sumcheck");
+        let mut transcript_p = MerlinSumcheckTranscript::new(&mut transcript_p_inner);
+        let mut transcript_v_inner = Transcript::new(b"test_sumcheck");
+        let mut transcript_v = MerlinSumcheckTranscript::new(&mut transcript_v_inner);
 
         let (proof, _challenges, _claim) =
             BatchedSumcheck::prove(vec![&mut prover], &mut prover_acc, &mut transcript_p);
@@ -305,8 +308,10 @@ mod tests {
 
         let mut prover_acc = ProverOpeningAccumulator::<Fr>::new(0);
         let mut verifier_acc = VerifierOpeningAccumulator::<Fr>::new(0, false);
-        let mut transcript_p = KeccakSumcheckTranscript::new(b"test_zero_masking");
-        let mut transcript_v = KeccakSumcheckTranscript::new(b"test_zero_masking");
+        let mut transcript_p_inner = Transcript::new(b"test_zero_masking");
+        let mut transcript_p = MerlinSumcheckTranscript::new(&mut transcript_p_inner);
+        let mut transcript_v_inner = Transcript::new(b"test_zero_masking");
+        let mut transcript_v = MerlinSumcheckTranscript::new(&mut transcript_v_inner);
 
         let (proof, _challenges, _claim) =
             BatchedSumcheck::prove(vec![&mut prover], &mut prover_acc, &mut transcript_p);
@@ -339,8 +344,10 @@ mod tests {
 
         let mut prover_acc = ProverOpeningAccumulator::<Fr>::new(0);
         let mut verifier_acc = VerifierOpeningAccumulator::<Fr>::new(0, false);
-        let mut transcript_p = KeccakSumcheckTranscript::new(b"test_sumcheck_masking");
-        let mut transcript_v = KeccakSumcheckTranscript::new(b"test_sumcheck_masking");
+        let mut transcript_p_inner = Transcript::new(b"test_sumcheck_masking");
+        let mut transcript_p = MerlinSumcheckTranscript::new(&mut transcript_p_inner);
+        let mut transcript_v_inner = Transcript::new(b"test_sumcheck_masking");
+        let mut transcript_v = MerlinSumcheckTranscript::new(&mut transcript_v_inner);
 
         let (proof, _challenges, _claim) =
             BatchedSumcheck::prove(vec![&mut prover], &mut prover_acc, &mut transcript_p);

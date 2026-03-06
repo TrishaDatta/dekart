@@ -1,5 +1,6 @@
 // Copyright (c) Aptos Foundation
-// Licensed pursuant to the Innovation-Enabling Source Code License.
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
+
 //! Merlin-backed transcript that implements `SumcheckTranscript`
 //! so callers can drive sumcheck with an external Merlin transcript.
 
@@ -25,7 +26,7 @@ impl<'a> SumcheckTranscript for MerlinSumcheckTranscript<'a> {
         label: &'static [u8],
         scalar: &F,
     ) {
-        // Match KeccakSumcheckTranscript: 32-byte buffer for one scalar
+        // Keep the same fixed-width scalar encoding used by sumcheck transcripts.
         let mut buf = vec![0u8; 32];
         scalar
             .serialize_uncompressed(&mut buf)

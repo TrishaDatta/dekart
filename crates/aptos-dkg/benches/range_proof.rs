@@ -8,10 +8,9 @@
 use aptos_crypto::arkworks::GroupGenerators;
 use aptos_dkg::{
     range_proofs::{
-                dekart_multivariate::Proof as DekartMultivariate,
+        dekart_multivariate::Proof as DekartMultivariate,
         dekart_univariate::Proof as UnivariateDeKART,
-        dekart_univariate_v2::Proof as UnivariateDeKARTv2,
-        traits::BatchedRangeProof,
+        dekart_univariate_v2::Proof as UnivariateDeKARTv2, traits::BatchedRangeProof,
     },
     utils::test_utils::{self},
 };
@@ -53,7 +52,7 @@ fn bench_groups(c: &mut Criterion) {
     //     BLS12_381,
     // );
 
-//    bench_range_proof::<Bn254, DekartMultivariate<Bn254>>(c, DEKART_MULTIVARIATE_SCHEME_NAME, BN254);
+    //    bench_range_proof::<Bn254, DekartMultivariate<Bn254>>(c, DEKART_MULTIVARIATE_SCHEME_NAME, BN254);
     bench_range_proof::<Bls12_381, DekartMultivariate<Bls12_381>>(
         c,
         DEKART_MULTIVARIATE_SCHEME_NAME,

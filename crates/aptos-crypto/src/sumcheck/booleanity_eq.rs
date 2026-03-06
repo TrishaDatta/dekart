@@ -398,10 +398,11 @@ mod tests {
     use crate::sumcheck::{
         opening::{ProverOpeningAccumulator, VerifierOpeningAccumulator},
         protocol::BatchedSumcheck,
-        transcript::KeccakSumcheckTranscript,
+        MerlinSumcheckTranscript,
     };
     use ark_bn254::Fr;
     use ark_ff::{One, UniformRand, Zero};
+    use merlin::Transcript;
 
     #[test]
     fn booleanity_eq_sumcheck_prove_verify_arbitrary_t() {
@@ -422,8 +423,10 @@ mod tests {
 
         let mut prover_acc = ProverOpeningAccumulator::<Fr>::new(0);
         let mut verifier_acc = VerifierOpeningAccumulator::<Fr>::new(0, false);
-        let mut transcript_p = KeccakSumcheckTranscript::new(b"booleanity_eq_test");
-        let mut transcript_v = KeccakSumcheckTranscript::new(b"booleanity_eq_test");
+        let mut transcript_p_inner = Transcript::new(b"booleanity_eq_test");
+        let mut transcript_p = MerlinSumcheckTranscript::new(&mut transcript_p_inner);
+        let mut transcript_v_inner = Transcript::new(b"booleanity_eq_test");
+        let mut transcript_v = MerlinSumcheckTranscript::new(&mut transcript_v_inner);
 
         let (proof, challenges, _claim) =
             BatchedSumcheck::prove(vec![&mut prover], &mut prover_acc, &mut transcript_p);
@@ -486,8 +489,10 @@ mod tests {
             BooleanityEqSumcheckProver::<Fr>::new(num_vars, mle_evals.clone(), c, t.clone());
         let mut prover_acc = ProverOpeningAccumulator::<Fr>::new(0);
         let mut verifier_acc = VerifierOpeningAccumulator::<Fr>::new(0, false);
-        let mut transcript_p = KeccakSumcheckTranscript::new(b"one_var");
-        let mut transcript_v = KeccakSumcheckTranscript::new(b"one_var");
+        let mut transcript_p_inner = Transcript::new(b"one_var");
+        let mut transcript_p = MerlinSumcheckTranscript::new(&mut transcript_p_inner);
+        let mut transcript_v_inner = Transcript::new(b"one_var");
+        let mut transcript_v = MerlinSumcheckTranscript::new(&mut transcript_v_inner);
         let (proof, _challenges, _) =
             BatchedSumcheck::prove(vec![&mut prover], &mut prover_acc, &mut transcript_p);
         let verifier = BooleanityEqSumcheckVerifier::<Fr>::new(num_vars, mle_evals, c, t);
@@ -519,8 +524,10 @@ mod tests {
 
         let mut prover_acc = ProverOpeningAccumulator::<Fr>::new(0);
         let mut verifier_acc = VerifierOpeningAccumulator::<Fr>::new(0, false);
-        let mut transcript_p = KeccakSumcheckTranscript::new(b"two_var");
-        let mut transcript_v = KeccakSumcheckTranscript::new(b"two_var");
+        let mut transcript_p_inner = Transcript::new(b"two_var");
+        let mut transcript_p = MerlinSumcheckTranscript::new(&mut transcript_p_inner);
+        let mut transcript_v_inner = Transcript::new(b"two_var");
+        let mut transcript_v = MerlinSumcheckTranscript::new(&mut transcript_v_inner);
 
         let (proof, _challenges, _) =
             BatchedSumcheck::prove(vec![&mut prover], &mut prover_acc, &mut transcript_p);
@@ -562,8 +569,10 @@ mod tests {
 
         let mut prover_acc = ProverOpeningAccumulator::<Fr>::new(0);
         let mut verifier_acc = VerifierOpeningAccumulator::<Fr>::new(0, false);
-        let mut transcript_p = KeccakSumcheckTranscript::new(b"booleanity_eq_hypercube");
-        let mut transcript_v = KeccakSumcheckTranscript::new(b"booleanity_eq_hypercube");
+        let mut transcript_p_inner = Transcript::new(b"booleanity_eq_hypercube");
+        let mut transcript_p = MerlinSumcheckTranscript::new(&mut transcript_p_inner);
+        let mut transcript_v_inner = Transcript::new(b"booleanity_eq_hypercube");
+        let mut transcript_v = MerlinSumcheckTranscript::new(&mut transcript_v_inner);
 
         let (proof, challenges, _claim) =
             BatchedSumcheck::prove(vec![&mut prover], &mut prover_acc, &mut transcript_p);

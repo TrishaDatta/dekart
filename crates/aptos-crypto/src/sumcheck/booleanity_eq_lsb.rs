@@ -535,10 +535,11 @@ mod tests {
         opening::{ProverOpeningAccumulator, VerifierOpeningAccumulator},
         protocol::BatchedSumcheck,
         traits::SumcheckInstanceProver,
-        transcript::KeccakSumcheckTranscript,
+        MerlinSumcheckTranscript,
     };
     use ark_bn254::Fr;
     use ark_ff::{One, UniformRand, Zero};
+    use merlin::Transcript;
 
     #[test]
     fn booleanity_eq_lsb_prove_verify_arbitrary_t() {
@@ -560,8 +561,10 @@ mod tests {
 
         let mut prover_acc = ProverOpeningAccumulator::<Fr>::new(0);
         let mut verifier_acc = VerifierOpeningAccumulator::<Fr>::new(0, false);
-        let mut transcript_p = KeccakSumcheckTranscript::new(b"booleanity_eq_lsb_test");
-        let mut transcript_v = KeccakSumcheckTranscript::new(b"booleanity_eq_lsb_test");
+        let mut transcript_p_inner = Transcript::new(b"booleanity_eq_lsb_test");
+        let mut transcript_p = MerlinSumcheckTranscript::new(&mut transcript_p_inner);
+        let mut transcript_v_inner = Transcript::new(b"booleanity_eq_lsb_test");
+        let mut transcript_v = MerlinSumcheckTranscript::new(&mut transcript_v_inner);
 
         let (proof, challenges, _claim) =
             BatchedSumcheck::prove(vec![&mut prover], &mut prover_acc, &mut transcript_p);
@@ -652,8 +655,10 @@ mod tests {
 
         let mut prover_acc = ProverOpeningAccumulator::<Fr>::new(0);
         let mut verifier_acc = VerifierOpeningAccumulator::<Fr>::new(0, false);
-        let mut transcript_p = KeccakSumcheckTranscript::new(b"booleanity_eq_lsb_hypercube");
-        let mut transcript_v = KeccakSumcheckTranscript::new(b"booleanity_eq_lsb_hypercube");
+        let mut transcript_p_inner = Transcript::new(b"booleanity_eq_lsb_hypercube");
+        let mut transcript_p = MerlinSumcheckTranscript::new(&mut transcript_p_inner);
+        let mut transcript_v_inner = Transcript::new(b"booleanity_eq_lsb_hypercube");
+        let mut transcript_v = MerlinSumcheckTranscript::new(&mut transcript_v_inner);
 
         let (proof, _challenges, _) =
             BatchedSumcheck::prove(vec![&mut prover], &mut prover_acc, &mut transcript_p);
