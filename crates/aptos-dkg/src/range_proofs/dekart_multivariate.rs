@@ -338,7 +338,7 @@ impl<E: Pairing> traits::BatchedRangeProof<E> for Proof<E> {
         }
         if self.y_f != sum_2j_minus_1_y_j {
             return Err(anyhow::anyhow!(
-                "Step 4b check failed: y_f - sum_{j=1}^ℓ 2^{j-1} y_j != 0 (correlated masks)."
+                "Step 4b check failed: y_f - sum_{{j=1}}^ℓ 2^{{j-1}} y_j != 0 (correlated masks)."
             ));
         }
         #[cfg(feature = "range_proof_timing_multivariate")]
@@ -446,17 +446,18 @@ impl<E: Pairing> traits::BatchedRangeProof<E> for Proof<E> {
                 }
             })
             .collect();
-        let (g1_terms, g2_terms) = batch_pairing_for_verify_generalized::<E, _, SumEvalHom<E::ScalarField>>(
-            &vk.srs,
-            &sets,
-            &SumEvalHom::<E::ScalarField>::default(),
-            &commitment_msms,
-            &y_rev,
-            self.zk_pcs_batch_proof.sigma_proof_statement.phi_y,
-            &self.zk_pcs_batch_proof,
-            &mut trs,
-            rng,
-        )?;
+        let (g1_terms, g2_terms) =
+            batch_pairing_for_verify_generalized::<E, _, SumEvalHom<E::ScalarField>>(
+                &vk.srs,
+                &sets,
+                &SumEvalHom::<E::ScalarField>::default(),
+                &commitment_msms,
+                &y_rev,
+                self.zk_pcs_batch_proof.sigma_proof_statement.1,
+                &self.zk_pcs_batch_proof,
+                &mut trs,
+                rng,
+            )?;
         #[cfg(feature = "range_proof_timing_multivariate")]
         print_cumulative("batch_pairing_for_verify_generalized", start.elapsed());
 
@@ -553,8 +554,7 @@ pub fn prove_impl<E: Pairing, R: RngCore + CryptoRng>(
     let f_j_evals_without_r = scalars_to_bits::transpose_bit_matrix(&bits);
 
     // Step 3b: Sample correlated masks β_1,…,β_ℓ with β = Σ_{j=1}^ℓ 2^{j-1} β_j
-    let betas: Vec<E::ScalarField> =
-        correlated_randomness(rng, 2, u32::from(ell), &beta);
+    let betas: Vec<E::ScalarField> = correlated_randomness(rng, 2, u32::from(ell), &beta);
 
     // Step 3c: Construct f_j
     let size = (values.len() + 1).next_power_of_two();
@@ -1068,6 +1068,7 @@ fn zkzc_send_polys<E: Pairing>(
 //     // }
 
 // }
+//
 
 fn zksc_blind<E: Pairing, R: RngCore + CryptoRng>(
     last_msm_elt: E::G1Affine,
