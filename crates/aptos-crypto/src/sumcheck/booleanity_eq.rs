@@ -428,7 +428,7 @@ mod tests {
         let (proof, challenges, _claim) =
             BatchedSumcheck::prove(vec![&mut prover], &mut prover_acc, &mut transcript_p);
 
-        let result = BatchedSumcheck::verify_standard::<Fr>(
+        let result = BatchedSumcheck::verify_standard::<Fr, _>(
             &proof,
             vec![&verifier],
             &mut verifier_acc,
@@ -491,7 +491,7 @@ mod tests {
         let (proof, _challenges, _) =
             BatchedSumcheck::prove(vec![&mut prover], &mut prover_acc, &mut transcript_p);
         let verifier = BooleanityEqSumcheckVerifier::<Fr>::new(num_vars, mle_evals, c, t);
-        let result = BatchedSumcheck::verify_standard::<Fr>(
+        let result = BatchedSumcheck::verify_standard::<Fr, _>(
             &proof,
             vec![&verifier],
             &mut verifier_acc,
@@ -525,7 +525,7 @@ mod tests {
         let (proof, _challenges, _) =
             BatchedSumcheck::prove(vec![&mut prover], &mut prover_acc, &mut transcript_p);
 
-        let result = BatchedSumcheck::verify_standard::<Fr>(
+        let result = BatchedSumcheck::verify_standard::<Fr, _>(
             &proof,
             vec![&verifier],
             &mut verifier_acc,
@@ -568,7 +568,7 @@ mod tests {
         let (proof, challenges, _claim) =
             BatchedSumcheck::prove(vec![&mut prover], &mut prover_acc, &mut transcript_p);
 
-        let result = BatchedSumcheck::verify_standard::<Fr>(
+        let result = BatchedSumcheck::verify_standard::<Fr, _>(
             &proof,
             vec![&verifier],
             &mut verifier_acc,

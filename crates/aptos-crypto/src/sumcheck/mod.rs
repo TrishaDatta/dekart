@@ -26,6 +26,7 @@ pub use booleanity_eq::{
 };
 pub use booleanity_eq_lsb::{
     BooleanityEqLsbParams, BooleanityEqSumcheckProverLSB, BooleanityEqSumcheckVerifierLSB,
+    BooleanityEqSumcheckVerifierLSBWithOpenings,
 };
 pub use dense_poly::{BindingOrder, DensePolynomial};
 pub use field::SumcheckField;
@@ -36,5 +37,5 @@ pub use protocol::{BatchedSumcheck, ClearSumcheckProof};
 pub use traits::{
     OpeningAccumulator, SumcheckInstanceParams, SumcheckInstanceProver, SumcheckInstanceVerifier,
 };
-pub use transcript::KeccakSumcheckTranscript;
+pub use transcript::{KeccakSumcheckTranscript, SumcheckTranscript};
 pub use unipoly::{CompressedUniPoly, UniPoly};

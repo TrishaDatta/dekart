@@ -6,6 +6,25 @@ use crate::sumcheck::field::SumcheckField;
 use ark_serialize::CanonicalSerialize;
 use sha3::{Digest, Keccak256};
 
+/// Transcript interface for sumcheck so that callers (e.g. range proofs) can drive
+/// the sumcheck with their own transcript (e.g. Merlin).
+pub trait SumcheckTranscript {
+    fn append_scalar<F: SumcheckField + CanonicalSerialize>(
+        &mut self,
+        label: &'static [u8],
+        scalar: &F,
+    );
+    fn append_scalars<F: SumcheckField + CanonicalSerialize>(
+        &mut self,
+        label: &'static [u8],
+        scalars: &[F],
+    );
+    fn challenge_scalar<F: SumcheckField + ark_ff::PrimeField>(&mut self) -> F;
+    fn challenge_vector<F: SumcheckField + ark_ff::PrimeField>(&mut self, len: usize) -> Vec<F> {
+        (0..len).map(|_| self.challenge_scalar::<F>()).collect()
+    }
+}
+
 #[derive(Clone, Default)]
 pub struct KeccakSumcheckTranscript {
     state: [u8; 32],
@@ -51,12 +70,8 @@ impl KeccakSumcheckTranscript {
         out[start..].copy_from_slice(&self.state[..remaining]);
     }
 
-    /// Append a single scalar to the transcript.
-    pub fn append_scalar<F: SumcheckField + CanonicalSerialize>(
-        &mut self,
-        _label: &'static [u8],
-        scalar: &F,
-    ) {
+    /// Append a single scalar to the transcript (internal; use SumcheckTranscript trait).
+    fn do_append_scalar<F: SumcheckField + CanonicalSerialize>(&mut self, scalar: &F) {
         let mut buf = vec![0u8; 32];
         scalar.serialize_uncompressed(&mut buf).unwrap();
         let mut hasher = self.hasher();
@@ -64,12 +79,8 @@ impl KeccakSumcheckTranscript {
         self.update_state(hasher.finalize().into());
     }
 
-    /// Append multiple scalars.
-    pub fn append_scalars<F: SumcheckField + CanonicalSerialize>(
-        &mut self,
-        _label: &'static [u8],
-        scalars: &[F],
-    ) {
+    /// Append multiple scalars (internal).
+    fn do_append_scalars<F: SumcheckField + CanonicalSerialize>(&mut self, scalars: &[F]) {
         let mut buf = vec![];
         for s in scalars {
             s.serialize_uncompressed(&mut buf).unwrap();
@@ -79,18 +90,41 @@ impl KeccakSumcheckTranscript {
         self.update_state(hasher.finalize().into());
     }
 
-    /// Produce one field element as challenge (requires PrimeField for from_be_bytes_mod_order).
-    pub fn challenge_scalar<F: SumcheckField + ark_ff::PrimeField>(&mut self) -> F {
+    /// Produce one field element as challenge (internal).
+    fn do_challenge_scalar<F: SumcheckField + ark_ff::PrimeField>(&mut self) -> F {
         let mut buf = [0u8; 32];
         self.challenge_bytes(&mut buf);
         F::from_be_bytes_mod_order(&buf)
     }
 
-    /// Produce a vector of field elements (for batching coefficients).
-    pub fn challenge_vector<F: SumcheckField + ark_ff::PrimeField>(
+    /// Produce a vector of field elements (internal).
+    fn do_challenge_vector<F: SumcheckField + ark_ff::PrimeField>(&mut self, len: usize) -> Vec<F> {
+        (0..len).map(|_| self.do_challenge_scalar::<F>()).collect()
+    }
+}
+
+impl SumcheckTranscript for KeccakSumcheckTranscript {
+    fn append_scalar<F: SumcheckField + CanonicalSerialize>(
         &mut self,
-        len: usize,
-    ) -> Vec<F> {
-        (0..len).map(|_| self.challenge_scalar::<F>()).collect()
+        _label: &'static [u8],
+        scalar: &F,
+    ) {
+        self.do_append_scalar(scalar);
+    }
+
+    fn append_scalars<F: SumcheckField + CanonicalSerialize>(
+        &mut self,
+        _label: &'static [u8],
+        scalars: &[F],
+    ) {
+        self.do_append_scalars(scalars);
+    }
+
+    fn challenge_scalar<F: SumcheckField + ark_ff::PrimeField>(&mut self) -> F {
+        self.do_challenge_scalar::<F>()
+    }
+
+    fn challenge_vector<F: SumcheckField + ark_ff::PrimeField>(&mut self, len: usize) -> Vec<F> {
+        self.do_challenge_vector::<F>(len)
     }
 }

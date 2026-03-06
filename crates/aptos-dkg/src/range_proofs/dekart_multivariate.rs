@@ -20,15 +20,7 @@ use crate::{
         homomorphism::{Trait as _, TrivialShape},
         Trait as _,
     },
-    sumcheck::{
-        ml_sumcheck,
-        ml_sumcheck::{
-            data_structures::PolynomialInfo as SumcheckPolynomialInfo,
-            protocol::{prover::ProverMsg, verifier::VerifierMsg},
-            MLSumcheck,
-        },
-        rng::TranscriptRng,
-    },
+    sumcheck::merlin_transcript::MerlinSumcheckTranscript,
     Scalar,
 };
 use aptos_crypto::{
@@ -37,6 +29,10 @@ use aptos_crypto::{
         random::{sample_field_element, sample_field_elements},
         srs::{SrsBasis, SrsType},
         GroupGenerators,
+    },
+    sumcheck::{
+        BatchedSumcheck, BooleanityEqSumcheckProverLSB, BooleanityEqSumcheckVerifierLSBWithOpenings,
+        ClearSumcheckProof, ProverOpeningAccumulator, VerifierOpeningAccumulator,
     },
     utils::powers,
 };
@@ -65,8 +61,8 @@ pub struct VerificationKey<E: Pairing> {
     xi_1: E::G1Affine,
     last_tau: E::G1Affine,
     vk_hkzg: univariate_hiding_kzg::VerificationKey<E>,
-    //verifier_precomputed: VerifierPrecomputed<E>,
-    poly_info: SumcheckPolynomialInfo,
+    /// Number of variables for sumcheck (log2 of domain size)
+    pub(crate) num_variables: usize,
     srs: Srs<E>,
 }
 
@@ -80,7 +76,7 @@ pub struct Proof<E: Pairing> {
     pub f_j_commitments: Vec<E::G1Affine>,
     pub g_i_commitments: Vec<E::G1Affine>,
     pub H_g: E::ScalarField,
-    pub sumcheck_proof: Vec<ProverMsg<E::ScalarField>>,
+    pub sumcheck_proof: ClearSumcheckProof<E::ScalarField>,
     pub y_f: E::ScalarField,
     pub y_js: Vec<E::ScalarField>,
     pub y_g: E::ScalarField,
@@ -138,11 +134,7 @@ impl<E: Pairing> traits::BatchedRangeProof<E> for Proof<E> {
         let last_tau = *vk_taus_1
             .last()
             .expect("PowersOfTau SRS has at least one element");
-        let num_vars = size.ilog2() as usize;
-        let poly_info = SumcheckPolynomialInfo {
-            num_variables: num_vars,
-            max_multiplicands: 2,
-        };
+        let num_variables = size.ilog2() as usize;
         let srs = Srs {
             taus_1: vk_taus_1,
             xi_1: ck.xi_1,
@@ -154,7 +146,7 @@ impl<E: Pairing> traits::BatchedRangeProof<E> for Proof<E> {
             xi_1: ck.xi_1,
             last_tau,
             vk_hkzg,
-            poly_info,
+            num_variables,
             srs,
         };
         let pk = ProverKey {
@@ -203,12 +195,12 @@ impl<E: Pairing> traits::BatchedRangeProof<E> for Proof<E> {
 
         // Number of variables for this instance (must match prover; can be less than vk max)
         let num_vars = (n + 1).next_power_of_two().ilog2() as usize;
-        if num_vars > vk.poly_info.num_variables {
+        if num_vars > vk.num_variables {
             anyhow::bail!(
                 "instance n={} requires num_vars={} but setup supports at most {}",
                 n,
                 num_vars,
-                vk.poly_info.num_variables
+                vk.num_variables
             );
         }
 
@@ -264,7 +256,8 @@ impl<E: Pairing> traits::BatchedRangeProof<E> for Proof<E> {
 
         let c: E::ScalarField =
             <merlin::Transcript as RangeProof<E, Proof<E>>>::challenge_scalar(&mut trs);
-        let alpha: E::ScalarField =
+        // Drawn for transcript consistency; sumcheck uses sumcheck_alpha=0 until alpha*g is in the prover
+        let _alpha: E::ScalarField =
             <merlin::Transcript as RangeProof<E, Proof<E>>>::challenge_nonzero_scalar(&mut trs);
         let c_zc = <merlin::Transcript as RangeProof<E, Proof<E>>>::challenge_point(
             &mut trs,
@@ -276,22 +269,61 @@ impl<E: Pairing> traits::BatchedRangeProof<E> for Proof<E> {
             start.elapsed(),
         );
 
-        // Step 3e: Sumcheck verify
+        // Step 3e: Sumcheck verify (aptos-crypto BooleanityEq LSB)
+        // For now we use alpha=0 for sumcheck (BooleanityEq part only); full alpha*g can be added later.
         #[cfg(feature = "range_proof_timing_multivariate")]
         let start = Instant::now();
-        let sumcheck_poly_info_instance = SumcheckPolynomialInfo {
-            num_variables: num_vars,
-            max_multiplicands: vk.poly_info.max_multiplicands,
-        };
-        let mut trng = TranscriptRng::<E::ScalarField>::new(&mut trs);
-        let subclaim = ml_sumcheck::MLSumcheck::verify_as_subprotocol(
-            &mut trng,
-            &sumcheck_poly_info_instance,
-            alpha * self.H_g,
+        let sumcheck_alpha = E::ScalarField::ZERO; // TODO: use alpha when alpha*g is in the prover
+        let claimed_sum = sumcheck_alpha * self.H_g;
+        let alpha_y_g = sumcheck_alpha * self.y_g;
+        let verifier = BooleanityEqSumcheckVerifierLSBWithOpenings::new_with_alpha_y_g(
+            num_vars,
+            c,
+            c_zc.clone(),
+            claimed_sum,
+            self.y_js[..ell as usize].to_vec(),
+            if alpha_y_g == E::ScalarField::ZERO {
+                None
+            } else {
+                Some(alpha_y_g)
+            },
+        );
+        let mut sumcheck_transcript = MerlinSumcheckTranscript::new(&mut trs);
+        let mut verifier_acc = VerifierOpeningAccumulator::new(0, false);
+        let mut sumcheck_diagnostics = Vec::new();
+        let r_sumcheck = BatchedSumcheck::verify_standard_with_diagnostics::<E::ScalarField, _>(
             &self.sumcheck_proof,
-        )
-        .map_err(|e| anyhow::anyhow!("sumcheck verify: {:?}", e))?;
-        let x = &subclaim.point;
+            vec![&verifier],
+            &mut verifier_acc,
+            &mut sumcheck_transcript,
+            &mut sumcheck_diagnostics,
+        );
+        let r_sumcheck = r_sumcheck.map_err(|e| {
+            eprintln!("sumcheck verify failed: {:?}. Diagnostics:", e);
+            for line in &sumcheck_diagnostics {
+                eprintln!("  {}", line);
+            }
+            anyhow::anyhow!("sumcheck verify: {:?}", e)
+        })?;
+        let x: Vec<E::ScalarField> = r_sumcheck;
+        let subclaim_expected_eval = {
+            let eq_c_zc_at_x: E::ScalarField = (0..x.len())
+                .map(|i| {
+                    let c_i = c_zc[i];
+                    let xi = x[i];
+                    (E::ScalarField::ONE - c_i) + xi * (c_i + c_i - E::ScalarField::ONE)
+                })
+                .product();
+            let eq_zero_at_x: E::ScalarField = x.iter().map(|&xi| E::ScalarField::ONE - xi).product();
+            let z_0_at_x = E::ScalarField::ONE - eq_zero_at_x;
+            let mut sum_c_j = E::ScalarField::ZERO;
+            let mut c_pow = c;
+            for &y_j in self.y_js.iter().take(ell as usize) {
+                sum_c_j += c_pow * y_j * (E::ScalarField::ONE - y_j);
+                c_pow *= c;
+            }
+            sum_c_j * eq_c_zc_at_x * z_0_at_x + sumcheck_alpha * self.y_g
+        };
 
         #[cfg(feature = "range_proof_timing_multivariate")]
         print_cumulative("sumcheck verify", start.elapsed());
@@ -319,8 +351,8 @@ impl<E: Pairing> traits::BatchedRangeProof<E> for Proof<E> {
             sum_c_j_y_j_one_minus_y_j += c_pow * y_j * (E::ScalarField::ONE - y_j);
             c_pow *= c;
         }
-        let lhs_4a = sum_c_j_y_j_one_minus_y_j * eq_c_zc_at_x * Z_0_at_x + alpha * self.y_g;
-        if lhs_4a != subclaim.expected_evaluation {
+        let lhs_4a = sum_c_j_y_j_one_minus_y_j * eq_c_zc_at_x * Z_0_at_x + sumcheck_alpha * self.y_g;
+        if lhs_4a != subclaim_expected_eval {
             return Err(anyhow::anyhow!(
                 "Step 4a check failed: (sum c^j y_j(1-y_j)) * eq_c_zc(x) * Z_0(x) + alpha*y_g != h(x). \
                  Check transcript order (vk, C, n, ell, C_fj, C_gi, H_g, c, alpha, c_zc), \
@@ -385,8 +417,7 @@ impl<E: Pairing> traits::BatchedRangeProof<E> for Proof<E> {
         let combined_comm =
             E::G1::msm(&combined_bases, &combined_scalars).expect("combined commitment MSM");
 
-        let x = &subclaim.point;
-        let point_reversed: Vec<E::ScalarField> = x.iter().rev().cloned().collect(); // Why??
+        let point_reversed: Vec<E::ScalarField> = x.iter().rev().cloned().collect();
         let zeromorph_msm = zeta_z_com::<E>(
             self.zeromorph_q_hat_com,
             combined_comm.into_affine(),
@@ -686,20 +717,8 @@ pub fn prove_impl<E: Pairing, R: RngCore + CryptoRng>(
     #[cfg(feature = "range_proof_timing_multivariate")]
     print_cumulative("zkzc_send_polys (sumcheck total)", start.elapsed());
 
-    #[cfg(feature = "range_proof_timing_multivariate")]
-    let start = Instant::now();
-    // Sumcheck proves the hypercube sum of h = [L + Σ c^j f_j(1-f_j)]*eq_t*(1-eq_zero) + α*g (eq_zero = ∏(1-xᵢ)).
-    // The verifier checks proof[0].evaluations[0]+proof[0].evaluations[1] == asserted_sum, so we must
-    // send the actual sum (extract_sum), not α*H_g.
-    let _asserted_sum = MLSumcheck::<E::ScalarField>::extract_sum(&sumcheck_proof.0); // TODO: remove this?
-
-    // Sumcheck point: use all round challenges from verifier_messages (see sumcheck fix: we now
-    // include the final round's challenge so the point matches the verifier's subclaim.point).
-    let xs: Vec<E::ScalarField> = sumcheck_proof
-        .1
-        .into_iter()
-        .map(|msg| msg.randomness)
-        .collect();
+    // Sumcheck point: round challenges from aptos-crypto BatchedSumcheck::prove.
+    let xs: Vec<E::ScalarField> = sumcheck_proof.1;
     debug_assert_eq!(xs.len(), num_vars as usize);
 
     // Step 6: Evaluations y_f = f(x), y_j = f_j(x) at sumcheck point x = (x_1,...,x_n)
@@ -882,68 +901,54 @@ pub fn prove_impl<E: Pairing, R: RngCore + CryptoRng>(
     }
 }
 
-/// Run sumcheck on (Σ c^j f_j(1-f_j)) Z_0 + α g only (correlated masks: f - Σ 2^{j-1} f_j is zero on hypercube, checked in Step 4b).
-/// Draws eq_point c_zc from trs, then runs MLSumcheck::prove_as_subprotocol with TranscriptRng.
+/// Run sumcheck on (Σ c^j f_j(1-f_j)) Z_0 (+ α*g when added later) using aptos-crypto BooleanityEq LSB.
+/// Draws eq_point c_zc from trs, then runs BatchedSumcheck with BooleanityEqSumcheckProverLSB.
+/// For now alpha*g is not included in the sumcheck polynomial (alpha=0); verifier adds alpha*y_g to expected output.
 #[allow(clippy::type_complexity)]
-#[allow(unused_mut)]
-#[allow(unused_variables)]
 fn zkzc_send_polys<E: Pairing>(
     trs: &mut merlin::Transcript,
-    g_is: Vec<Vec<E::ScalarField>>,
+    _g_is: Vec<Vec<E::ScalarField>>,
     num_vars: u8,
     ell: usize,
     c: E::ScalarField,
-    alpha: E::ScalarField,
+    _alpha: E::ScalarField,
     hat_f_j_evals: &[Vec<E::ScalarField>],
-    mut timing: Option<&mut dyn FnMut(&str, std::time::Duration)>,
-) -> (
-    Vec<ProverMsg<E::ScalarField>>,
-    Vec<VerifierMsg<E::ScalarField>>,
-) {
+    _timing: Option<&mut dyn FnMut(&str, std::time::Duration)>,
+) -> (ClearSumcheckProof<E::ScalarField>, Vec<E::ScalarField>) {
     #[cfg(feature = "range_proof_timing_multivariate")]
     let start = std::time::Instant::now();
-    // Spec: eq point c_zc for zerocheck; must match verifier's challenge_point(dimension)
     let c_zc = <merlin::Transcript as RangeProof<E, Proof<E>>>::challenge_point(trs, num_vars);
     let nv = num_vars as usize;
     #[cfg(feature = "range_proof_timing_multivariate")]
-    if let Some(ref mut f) = timing {
+    if let Some(ref mut f) = _timing {
         f("zkzc_send_polys: eq_point c_zc", start.elapsed());
     }
 
     #[cfg(feature = "range_proof_timing_multivariate")]
     let start = std::time::Instant::now();
-    let mut poly = crate::sumcheck::ml_sumcheck::data_structures::BinaryConstraintPolynomial::new(
-        nv, c_zc, alpha, g_is,
-    );
-    // No linear term: with correlated randomness we prove only (Σ c^j f_j(1-f_j)) Z_0 + α g; Step 4b checks y_f = Σ 2^{j-1} y_j.
-    let mut c_j = c;
-    for j in 0..ell {
-        let f_hat_j = DenseMultilinearExtension::from_evaluations_vec(nv, hat_f_j_evals[j].clone());
-        poly.add_constraint(c_j, f_hat_j);
-        c_j *= c;
-    }
+    // MLE evals: one vec per f_j (BooleanityEq: sum_j c^j f_j(1-f_j) * eq_t * Z_0)
+    let mle_evals: Vec<Vec<E::ScalarField>> = hat_f_j_evals[..ell].iter().map(|v| v.to_vec()).collect();
+    let mut prover = BooleanityEqSumcheckProverLSB::new(nv, mle_evals, c, c_zc);
     #[cfg(feature = "range_proof_timing_multivariate")]
-    if let Some(ref mut f) = timing {
-        f(
-            "zkzc_send_polys: BinaryConstraintPolynomial build + add_constraint",
-            start.elapsed(),
-        );
+    if let Some(ref mut f) = _timing {
+        f("zkzc_send_polys: BooleanityEqSumcheckProverLSB build", start.elapsed());
     }
 
     #[cfg(feature = "range_proof_timing_multivariate")]
     let start = std::time::Instant::now();
-    let mut trng = TranscriptRng::<E::ScalarField>::new(trs);
-    let (prover_msgs, _state, verifier_msgs) =
-        crate::sumcheck::ml_sumcheck::MLSumcheck::prove_as_subprotocol(&mut trng, &poly)
-            .expect("sumcheck prove failed");
+    let mut sumcheck_transcript = MerlinSumcheckTranscript::new(trs);
+    let mut prover_acc = ProverOpeningAccumulator::new(0);
+    let (proof, r_sumcheck, _initial_claim) = BatchedSumcheck::prove::<E::ScalarField, _>(
+        vec![&mut prover],
+        &mut prover_acc,
+        &mut sumcheck_transcript,
+    );
     #[cfg(feature = "range_proof_timing_multivariate")]
-    if let Some(ref mut f) = timing {
-        f(
-            "zkzc_send_polys: MLSumcheck::prove_as_subprotocol",
-            start.elapsed(),
-        );
+    if let Some(ref mut f) = _timing {
+        f("zkzc_send_polys: BatchedSumcheck::prove", start.elapsed());
     }
-    (prover_msgs, verifier_msgs)
+    let challenges: Vec<E::ScalarField> = r_sumcheck;
+    (proof, challenges)
 }
 
 // #[allow(non_snake_case)]
@@ -1345,7 +1350,11 @@ mod tests {
         );
 
         // Assert proof structure
-        assert_eq!(proof.sumcheck_proof.len(), 3, "sumcheck rounds = num_vars");
+        assert_eq!(
+            proof.sumcheck_proof.compressed_polys.len(),
+            3,
+            "sumcheck rounds = num_vars"
+        );
         assert_eq!(proof.f_j_commitments.len(), max_ell as usize);
         assert_eq!(
             proof.y_js.len(),

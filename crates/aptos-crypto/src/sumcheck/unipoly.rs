@@ -3,12 +3,13 @@
 // Univariate polynomial and compressed form (from Jolt, no jolt dep).
 
 use crate::sumcheck::{field::SumcheckField, gaussian_elimination};
+use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 #[derive(Clone, Debug, PartialEq)]
 pub struct UniPoly<F: SumcheckField> {
     pub coeffs: Vec<F>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, CanonicalSerialize, CanonicalDeserialize)]
 pub struct CompressedUniPoly<F: SumcheckField> {
     /// All coefficients except the linear term (recovered from hint).
     pub coeffs_except_linear_term: Vec<F>,
