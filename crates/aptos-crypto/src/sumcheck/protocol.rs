@@ -65,7 +65,10 @@ pub enum BatchedSumcheck {}
 
 impl BatchedSumcheck {
     /// Prove with one or more sumcheck instances. Returns (proof, challenges, initial_batched_claim).
-    pub fn prove<F: SumcheckField + CanonicalSerialize + ark_ff::PrimeField, T: SumcheckTranscript>(
+    pub fn prove<
+        F: SumcheckField + CanonicalSerialize + ark_ff::PrimeField,
+        T: SumcheckTranscript,
+    >(
         mut sumcheck_instances: Vec<&mut dyn SumcheckInstanceProver<F>>,
         opening_accumulator: &mut ProverOpeningAccumulator<F>,
         transcript: &mut T,
@@ -251,13 +254,14 @@ impl BatchedSumcheck {
 
         diagnostics.push(format!("sumcheck claim (batched): {:?}", claim));
 
-        let (output_claim, r_sumcheck) = match proof.verify(claim, max_num_rounds, max_degree, transcript) {
-            Ok(t) => t,
-            Err(e) => {
-                diagnostics.push(format!("sumcheck proof.verify failed: {:?}", e));
-                return Err(e);
-            }
-        };
+        let (output_claim, r_sumcheck) =
+            match proof.verify(claim, max_num_rounds, max_degree, transcript) {
+                Ok(t) => t,
+                Err(e) => {
+                    diagnostics.push(format!("sumcheck proof.verify failed: {:?}", e));
+                    return Err(e);
+                },
+            };
 
         let expected_output_claim: F = sumcheck_instances
             .iter()
