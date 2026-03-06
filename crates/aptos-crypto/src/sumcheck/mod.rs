@@ -16,6 +16,7 @@ mod masking;
 mod opening;
 mod protocol;
 mod transcript;
+mod merlin_transcript;
 mod unipoly;
 
 pub mod product4;
@@ -37,5 +38,6 @@ pub use protocol::{BatchedSumcheck, ClearSumcheckProof};
 pub use traits::{
     OpeningAccumulator, SumcheckInstanceParams, SumcheckInstanceProver, SumcheckInstanceVerifier,
 };
+pub use merlin_transcript::MerlinSumcheckTranscript;
 pub use transcript::{KeccakSumcheckTranscript, SumcheckTranscript};
 pub use unipoly::{CompressedUniPoly, UniPoly};

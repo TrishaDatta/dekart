@@ -25,6 +25,7 @@ pub trait SumcheckTranscript {
     }
 }
 
+// TODO: remove this?
 #[derive(Clone, Default)]
 pub struct KeccakSumcheckTranscript {
     state: [u8; 32],

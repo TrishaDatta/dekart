@@ -20,7 +20,6 @@ use crate::{
         homomorphism::{Trait as _, TrivialShape},
         Trait as _,
     },
-    sumcheck::merlin_transcript::MerlinSumcheckTranscript,
     Scalar,
 };
 use aptos_crypto::{
@@ -33,7 +32,7 @@ use aptos_crypto::{
     sumcheck::{
         BatchedSumcheck, BooleanityEqSumcheckProverLSB,
         BooleanityEqSumcheckVerifierLSBWithOpenings, ClearSumcheckProof, MaskingPolynomial,
-        ProverOpeningAccumulator, UniPoly, VerifierOpeningAccumulator,
+        MerlinSumcheckTranscript, ProverOpeningAccumulator, UniPoly, VerifierOpeningAccumulator,
     },
     utils::powers,
 };
@@ -187,7 +186,7 @@ impl<E: Pairing> traits::BatchedRangeProof<E> for Proof<E> {
         let mut print_cumulative = |name: &str, duration: Duration| {
             cumulative += duration;
             println!(
-                "{:>10.2} ms  ({:>10.2} ms cum.)  {}",
+                "{:>10.2} ms  ({:>10.2} ms cum.)  [dekart_multivariate verify] {}",
                 duration.as_secs_f64() * 1000.0,
                 cumulative.as_secs_f64() * 1000.0,
                 name
@@ -371,7 +370,7 @@ impl<E: Pairing> traits::BatchedRangeProof<E> for Proof<E> {
         #[cfg(feature = "range_proof_timing_multivariate")]
         print_cumulative("step4 scalar check (eq_c_zc, Z_0, lhs)", start.elapsed());
 
-        // Step 5a: Add y_f and {y_j}_{1≤j≤ℓ} to the Fiat–Shamir transcript.        #[cfg(feature = "range_proof_timing_multivariate")]
+        // Step 5a: Add y_f and {y_j}_{1≤j≤ℓ} to the Fiat–Shamir transcript.
         #[cfg(feature = "range_proof_timing_multivariate")]
         let start = Instant::now();
         trs.append_evaluation_points(&[self.y_f]);
@@ -531,12 +530,13 @@ pub fn prove_impl<E: Pairing, R: RngCore + CryptoRng>(
         );
     };
 
+    #[cfg(feature = "range_proof_timing_multivariate")]
+    let start = Instant::now();
     let mut trs = merlin::Transcript::new(b"dekart_multivariate");
     let tau_powers = match &pk.ck.msm_basis {
         SrsBasis::PowersOfTau { tau_powers } => tau_powers,
         _ => panic!("Expected PowersOfTau SRS"),
     };
-
     <merlin::Transcript as RangeProof<E, Proof<E>>>::append_vk(&mut trs, &pk.vk);
     <merlin::Transcript as RangeProof<E, Proof<E>>>::append_public_statement(
         &mut trs,
@@ -546,6 +546,8 @@ pub fn prove_impl<E: Pairing, R: RngCore + CryptoRng>(
             comm: comm.clone(),
         },
     );
+    #[cfg(feature = "range_proof_timing_multivariate")]
+    print_cumulative("transcript init (vk + public statement)", start.elapsed());
 
     #[cfg(feature = "range_proof_timing_multivariate")]
     let start = Instant::now();
@@ -712,6 +714,8 @@ pub fn prove_impl<E: Pairing, R: RngCore + CryptoRng>(
     #[cfg(feature = "range_proof_timing_multivariate")]
     print_cumulative("zkzc_send_polys (sumcheck total)", start.elapsed());
 
+    #[cfg(feature = "range_proof_timing_multivariate")]
+    let start = Instant::now();
     // Sumcheck point: round challenges from aptos-crypto BatchedSumcheck::prove.
     let xs: Vec<E::ScalarField> = sumcheck_proof.1;
     debug_assert_eq!(xs.len(), num_vars as usize);
@@ -735,7 +739,7 @@ pub fn prove_impl<E: Pairing, R: RngCore + CryptoRng>(
         <merlin::Transcript as RangeProof<E, Proof<E>>>::challenge_scalar(&mut trs);
     #[cfg(feature = "range_proof_timing_multivariate")]
     print_cumulative(
-        "asserted_sum + xs + g_evals + y_g + sumcheck_point + y_f + y_evals + hat_c",
+        "xs + y_f/y_js eval + transcript append + hat_c",
         start.elapsed(),
     );
 
@@ -795,6 +799,11 @@ pub fn prove_impl<E: Pairing, R: RngCore + CryptoRng>(
         hiding_kzg_pp: pk.ck.clone(),
         open_offset: 0,
     };
+    #[cfg(feature = "range_proof_timing_multivariate")]
+    print_cumulative(
+        "batched_evals + batched_poly + batched_randomness + zeromorph_pp",
+        start.elapsed(),
+    );
     #[cfg(feature = "range_proof_timing_multivariate")]
     let start = Instant::now();
     let (batched_instance, q_hat_com, q_k_com) = Zeromorph::open_to_batched_instance(
@@ -907,7 +916,7 @@ fn zkzc_send_polys<E: Pairing>(
     c: E::ScalarField,
     alpha: E::ScalarField,
     hat_f_j_evals: &[Vec<E::ScalarField>],
-    _timing: Option<&mut dyn FnMut(&str, std::time::Duration)>,
+    mut _timing: Option<&mut dyn FnMut(&str, std::time::Duration)>,
 ) -> (ClearSumcheckProof<E::ScalarField>, Vec<E::ScalarField>) {
     #[cfg(feature = "range_proof_timing_multivariate")]
     let start = std::time::Instant::now();
