@@ -36,13 +36,30 @@ impl<F: SumcheckField> DensePolynomial<F> {
         self.len
     }
 
-    /// Bind the top variable: fold Z into half length (left + r * (right - left)).
-    pub fn bind(&mut self, r: &F::Challenge, _order: BindingOrder) {
+    /// Bind one variable: fold Z into half length.
+    /// - **HighToLow (MSB-first)**: pair Z[g] with Z[g+half] (first variable = MSB of index).
+    /// - **LowToHigh (LSB-first)**: pair Z[2b] with Z[2b+1] (first variable = LSB of index).
+    pub fn bind(&mut self, r: &F::Challenge, order: BindingOrder) {
         let r_f = F::challenge_to_field(r);
         let n = self.len / 2;
-        let (left, right) = self.Z.split_at_mut(n);
-        for (a, b) in left.iter_mut().zip(right.iter()) {
-            *a += r_f * (*b - *a);
+        match order {
+            BindingOrder::HighToLow => {
+                let (left, right) = self.Z.split_at_mut(n);
+                for (a, b) in left.iter_mut().zip(right.iter()) {
+                    *a += r_f * (*b - *a);
+                }
+                self.Z.truncate(n);
+            },
+            BindingOrder::LowToHigh => {
+                let old_Z = std::mem::take(&mut self.Z);
+                self.Z = (0..n)
+                    .map(|i| {
+                        let a = old_Z[2 * i];
+                        let b = old_Z[2 * i + 1];
+                        a + r_f * (b - a)
+                    })
+                    .collect();
+            },
         }
         self.num_vars -= 1;
         self.len = n;

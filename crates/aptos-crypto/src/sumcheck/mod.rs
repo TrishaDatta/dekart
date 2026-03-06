@@ -8,6 +8,7 @@
 #![allow(non_snake_case)]
 
 pub mod booleanity_eq;
+pub mod booleanity_eq_lsb;
 mod dense_poly;
 mod field;
 mod gaussian_elimination;
@@ -22,6 +23,9 @@ pub mod traits;
 
 pub use booleanity_eq::{
     BooleanityEqParams, BooleanityEqSumcheckProver, BooleanityEqSumcheckVerifier,
+};
+pub use booleanity_eq_lsb::{
+    BooleanityEqLsbParams, BooleanityEqSumcheckProverLSB, BooleanityEqSumcheckVerifierLSB,
 };
 pub use dense_poly::{BindingOrder, DensePolynomial};
 pub use field::SumcheckField;
