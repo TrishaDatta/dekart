@@ -25,8 +25,7 @@ use crate::{
     },
     sigma_protocol::{
         homomorphism::{
-            fixed_base_msms::Trait as FixedBaseMsmsTrait, tuple::TupleCodomainShape,
-            Trait as HomTrait, TrivialShape as CodomainShape,
+            tuple::TupleCodomainShape, Trait as HomTrait, TrivialShape as CodomainShape,
         },
         traits::fiat_shamir_challenge_for_sigma_protocol,
         CurveGroupTrait, Proof, Trait as SigmaTrait,
@@ -35,7 +34,7 @@ use crate::{
 };
 use aptos_crypto::{
     arkworks::{
-        msm::{merge_scaled_msm_terms, MsmInput},
+        msm::{merge_msm_inputs_with_scales, MsmInput},
         random::sample_field_element,
         srs::{SrsBasis, SrsType},
         vanishing_poly, GroupGenerators,
@@ -725,12 +724,10 @@ pub fn batch_pairing_for_verify_generalized<
     let c_powers = powers(c, n);
     let (z_S_val, weights) = compute_weights::<E>(&z_S, &s_per_poly, x, &c_powers);
 
-    let commitment_refs: Vec<&MsmInput<E::G1Affine, E::ScalarField>> =
-        commitment_msms.iter().collect();
-    let merged = merge_scaled_msm_terms::<E::G1>(&commitment_refs, &weights);
+    let merged = merge_msm_inputs_with_scales(&commitment_msms, &weights);
 
     let msm_pi1 = MsmInput::new(vec![*pi_1], vec![-z_S_val]).expect("MSM pi_1");
-    let merged_minus_pi1 = merge_scaled_msm_terms::<E::G1>(&[&merged, &msm_pi1], &[
+    let merged_minus_pi1 = merge_msm_inputs_with_scales(&[merged, msm_pi1], &[
         E::ScalarField::ONE,
         E::ScalarField::ONE,
     ]);
@@ -789,28 +786,21 @@ pub fn batch_pairing_for_verify_generalized<
     let r_sum_ys = prover_commitment.1;
     full_hom
         .hom2
-        .verify_with_challenge(&phi_y, &r_sum_ys, c_sigma, &sigma_proof.z, None, rng)?;
+        .verify_with_challenge(&phi_y, &r_sum_ys, c_sigma, &sigma_proof.z, rng)?;
 
-    let (_, powers_of_beta) = full_hom.hom1.compute_verifier_challenges(
+    let hom1_msm_terms = full_hom.hom1.msm_terms_for_verify_with_challenge(
         &statement_curve_for_merge,
         &prover_commitment.0,
-        SHPLONKED_SIGMA_DST,
-        Some(2),
-        rng,
-    );
-    let msm_terms_response = full_hom.hom1.msm_terms(&sigma_proof.z);
-    let hom1_msm_terms = <shplonked_sigma::FirstTupleHom<E> as CurveGroupTrait>::merge_msm_terms(
-        msm_terms_response.into_iter().collect::<Vec<_>>(),
-        &prover_commitment.0,
-        &statement_curve_for_merge,
-        &powers_of_beta,
+        &sigma_proof.z,
         c_sigma,
     );
+    let hom1_merged =
+        aptos_crypto::arkworks::msm::merge_msm_inputs::<E::G1Affine, _>(&hom1_msm_terms, rng);
     // C_eval = C_eval_hid + g_rev·τ_0 for the batch pairing check.
     let c_eval = (c_eval_hid.into_group() + srs.taus_1[0].into_group() * g_rev_at_x).into_affine();
     // Spec Step 4: deferred G₁ MSM from π_PoK; Step 5a: C_f = ∑_i c^{i-1} Z_{S\S_i}(x)·C_i − Z_S(x)·π_1 − C_eval + c^n·C_PoK.
-    let C_PoK = E::G1::msm(hom1_msm_terms.bases(), hom1_msm_terms.scalars())
-        .expect("batch verify: C_PoK MSM");
+    let C_PoK =
+        E::G1::msm(hom1_merged.bases(), hom1_merged.scalars()).expect("batch verify: C_PoK MSM");
     let c_n = (0..n).fold(E::ScalarField::ONE, |acc, _| acc * c);
     let merged_minus_pi1_pt = E::G1::msm(merged_minus_pi1.bases(), merged_minus_pi1.scalars())
         .expect("batch verify: commitment to f MSM");

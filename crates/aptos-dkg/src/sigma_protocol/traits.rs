@@ -13,33 +13,22 @@ use crate::{
     Scalar,
 };
 use anyhow::ensure;
-use aptos_crypto::{
-    arkworks::{
-        msm::{merge_scaled_msm_terms, MsmInput},
-        random::sample_field_element,
-    },
-    utils,
+use aptos_crypto::arkworks::{
+    msm::{merge_msm_inputs, MsmInput},
+    random::sample_field_element,
 };
 use ark_ec::{CurveGroup, PrimeGroup};
 use ark_ff::{AdditiveGroup, Field, Fp, FpConfig, PrimeField};
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 use rand_core::{CryptoRng, RngCore};
 use serde::Serialize;
-use std::{fmt::Debug, hash::Hash};
+use std::fmt::Debug;
 
 pub trait Trait:
     homomorphism::Trait<Domain: Witness<Self::Scalar>, CodomainNormalized: Statement> + Sized
 // Need `Sized`` here because of `Proof<Self::Scalar, Self>`?
 {
     type Scalar: PrimeField; // Because Fiat-Shamir challenges use `PrimeField`
-
-    /// Shape of verifier batch size: mirrors the MSM homomorphism structure.
-    /// - For a leaf (single MSM/codomain): `Option<usize>` (number of components).
-    /// - For a tuple (f, g) with different MSM groups: `Option<(H1::VerifierBatchSize, H2::VerifierBatchSize)>`.
-    /// E.g. for tuple(f, g) with f itself a basic tuple, might want to use `Option<((usize, usize), usize)>`, etc.
-    /// - `None`: infer from `public_statement` (may clone to count, so performance may be degraded).
-    /// - `Some(shape)`: use the given shape; avoids cloning.
-    type VerifierBatchSize;
 
     fn dst(&self) -> Vec<u8>;
 
@@ -60,7 +49,6 @@ pub trait Trait:
         public_statement: &Self::CodomainNormalized,
         proof: &Proof<Self::Scalar, Self>,
         cntxt: &Ct,
-        verifier_batch_size: Option<Self::VerifierBatchSize>,
         rng: &mut R,
     ) -> anyhow::Result<()> {
         let prover_first_message = proof
@@ -73,14 +61,7 @@ pub trait Trait:
             prover_first_message,
             &self.dst(),
         );
-        self.verify_with_challenge(
-            public_statement,
-            prover_first_message,
-            c,
-            &proof.z,
-            verifier_batch_size,
-            rng,
-        )
+        self.verify_with_challenge(public_statement, prover_first_message, c, &proof.z, rng)
     }
 
     /// Verify the equations coming from the proof given an explicit Fiat–Shamir challenge
@@ -93,7 +74,6 @@ pub trait Trait:
         prover_commitment: &Self::CodomainNormalized,
         challenge: Self::Scalar,
         response: &Self::Domain,
-        verifier_batch_size: Option<Self::VerifierBatchSize>,
         rng: &mut R,
     ) -> anyhow::Result<()>;
 }
@@ -101,7 +81,6 @@ pub trait Trait:
 // This is the default implementation for the leaf case (single MSM/codomain)
 impl<T: CurveGroupTrait> Trait for T {
     type Scalar = T::Scalar;
-    type VerifierBatchSize = usize;
 
     fn dst(&self) -> Vec<u8> {
         CurveGroupTrait::dst(self) // `self.dst()` works but seems a bit too concise/circular
@@ -113,30 +92,17 @@ impl<T: CurveGroupTrait> Trait for T {
         prover_commitment: &Self::CodomainNormalized,
         challenge: Self::Scalar,
         response: &Self::Domain,
-        verifier_batch_size: Option<Self::VerifierBatchSize>,
         rng: &mut R,
     ) -> anyhow::Result<()> {
-        // the verifier's random element for batching (not the Fiat-Shamir challenge) is called "β" throughout the codebase
-        let number_of_beta_powers =
-            verifier_batch_size.unwrap_or_else(|| public_statement.clone().into_iter().count());
-        let powers_of_beta = if number_of_beta_powers > 1 {
-            let beta = sample_field_element(rng);
-            utils::powers(beta, number_of_beta_powers)
-        } else {
-            vec![<<Self as CurveGroupTrait>::Group as PrimeGroup>::ScalarField::ONE]
-        };
-
-        // Using β-powers, compute the batched MSM terms for the prover's response
-        // and check that the resulting MSM evaluates to the group identity
-        let msm_terms_for_prover_response = self.msm_terms(response);
-        let msm_terms = Self::merge_msm_terms(
-            msm_terms_for_prover_response.into_iter().collect(),
-            prover_commitment,
+        //let msm_terms_for_prover_response = self.msm_terms(response);
+        let msm_terms = self.msm_terms_for_verify_with_challenge(
             public_statement,
-            &powers_of_beta,
+            prover_commitment,
+            response,
             challenge,
         );
-        check_msm_eval_zero(self, msm_terms)?;
+        let merged = merge_msm_inputs(&msm_terms, rng);
+        check_msm_eval_zero(self, merged)?;
         Ok(())
     }
 }
@@ -162,7 +128,6 @@ pub trait CurveGroupTrait:
         public_statement: &Self::CodomainNormalized,
         proof: &Proof<<Self as fixed_base_msms::Trait>::Scalar, H>, // Would seem natural to set &Proof<E, Self>, but that ties the lifetime of H to that of Self, but we'd like it to be eg static
         cntxt: &Ct,
-        verifier_batch_size: Option<usize>,
         rng: &mut R,
     ) -> anyhow::Result<()>
     where
@@ -171,147 +136,71 @@ pub trait CurveGroupTrait:
             CodomainNormalized = Self::CodomainNormalized,
         >, // need this because `H` is technically different from `Self` due to lifetime changes
     {
-        let msm_terms = self.msm_terms_for_verify::<_, H, _>(
-            public_statement,
-            proof,
-            cntxt,
-            verifier_batch_size,
-            rng,
-        );
-
-        check_msm_eval_zero(self, msm_terms)?;
-
-        Ok(())
-    }
-
-    fn compute_verifier_challenges<Ct, R: RngCore + CryptoRng>(
-        &self,
-        public_statement: &Self::CodomainNormalized,
-        prover_first_message: &Self::CodomainNormalized, // TODO: this input will have to be modified for `compact` proofs; we just need something serializable, could pass `FirstProofItem<F, H>` instead
-        cntxt: &Ct,
-        verifier_batch_size: Option<usize>,
-        rng: &mut R,
-    ) -> (
-        <Self as fixed_base_msms::Trait>::Scalar,
-        Vec<<Self as fixed_base_msms::Trait>::Scalar>,
-    )
-    where
-        Ct: Serialize,
-        // H: homomorphism::Trait<Domain = Self::Domain, Codomain = Self::Codomain>, // OLD comment: will probably need this if we use `FirstProofItem<F, H>` instead
-    {
-        let number_of_beta_powers =
-            verifier_batch_size.unwrap_or_else(|| public_statement.clone().into_iter().count());
-        verifier_challenges_with_length::<_, _, _, _>(
-            cntxt,
-            self,
-            public_statement,
-            prover_first_message,
-            &self.dst(),
-            number_of_beta_powers,
-            rng,
-        )
-    }
-
-    // Returns the MSM terms that `verify()` needs
-    fn msm_terms_for_verify<Ct: Serialize, H, R: RngCore + CryptoRng>(
-        &self,
-        public_statement: &Self::CodomainNormalized,
-        proof: &Proof<<Self::Group as PrimeGroup>::ScalarField, H>,
-        cntxt: &Ct,
-        verifier_batch_size: Option<usize>,
-        rng: &mut R,
-    ) -> MsmInput<<Self::Group as CurveGroup>::Affine, <Self::Group as PrimeGroup>::ScalarField>
-    where
-        H: homomorphism::Trait<
-            Domain = Self::Domain,
-            CodomainNormalized = Self::CodomainNormalized,
-        >, // Need this because the lifetime was changed
-    {
         let prover_first_message = match &proof.first_proof_item {
             FirstProofItem::Commitment(A) => A,
             FirstProofItem::Challenge(_) => {
                 panic!("Missing implementation - expected commitment, not challenge")
             },
-        };
+        }; // TODO: I'm doing this twice
 
-        let (c, powers_of_beta) = self.compute_verifier_challenges(
+        let c = fiat_shamir_challenge_for_sigma_protocol(
+            cntxt,
+            self,
             public_statement,
             prover_first_message,
-            cntxt,
-            verifier_batch_size,
-            rng,
+            &self.dst(),
         );
 
-        let msm_terms_for_prover_response = self.msm_terms(&proof.z);
-
-        Self::merge_msm_terms(
-            msm_terms_for_prover_response.into_iter().collect(),
-            prover_first_message,
-            public_statement,
-            &powers_of_beta,
-            c,
-        )
+        self.verify_with_challenge(public_statement, prover_first_message, c, &proof.z, rng)
     }
 
-    /// The MSM terms of the sigma protocol. Instead of computing whether the MSM evaluates to the group identity,
-    /// return the terms in this batched form. This is useful for combining with the MSM terms of other protocols.
-    ///
-    /// Note that beta powers are already being added here because at the time it seemed convenient (and slightly faster)
-    /// to do that when the verifier's challenge is also being added. With hindsight... maybe not. Also means we might be
-    /// building the hash table multiple times unnecessarily. TODO: just output a basic Vec<MsmInput> instead by adding
-    /// A and P^c, don't use β-powers here
-    fn merge_msm_terms(
-        msm_terms: Vec<
-            MsmInput<<Self::Group as CurveGroup>::Affine, <Self::Group as PrimeGroup>::ScalarField>,
-        >,
+    fn verify_with_challenge<R: RngCore + CryptoRng>(
+        &self,
+        public_statement: &Self::CodomainNormalized,
+        prover_commitment: &Self::CodomainNormalized,
+        challenge: Self::Scalar,
+        response: &Self::Domain,
+        rng: &mut R,
+    ) -> anyhow::Result<()> {
+        let msm_terms = self.msm_terms_for_verify_with_challenge(
+            public_statement,
+            prover_commitment,
+            response,
+            challenge,
+        );
+        let merged = merge_msm_inputs(&msm_terms, rng);
+        check_msm_eval_zero(self, merged)?;
+        Ok(())
+    }
+
+    // Returns the MSM terms that `verify()` needs
+    fn msm_terms_for_verify_with_challenge(
+        &self,
+        public_statement: &Self::CodomainNormalized,
         prover_first_message: &Self::CodomainNormalized,
-        statement: &Self::CodomainNormalized,
-        powers_of_beta: &[<Self::Group as PrimeGroup>::ScalarField],
-        c: <Self::Group as PrimeGroup>::ScalarField,
-    ) -> MsmInput<<Self::Group as CurveGroup>::Affine, <Self::Group as PrimeGroup>::ScalarField>
-    where
-        <Self::Group as CurveGroup>::Affine: Copy + Eq + Hash,
+        prover_response: &Self::Domain,
+        challenge: <Self::Group as PrimeGroup>::ScalarField,
+    ) -> Vec<MsmInput<<Self::Group as CurveGroup>::Affine, <Self::Group as PrimeGroup>::ScalarField>>
     {
-        let n = msm_terms.len();
-        // Per index: (terms_i * β^i) ∪ (A_i, −β^i) ∪ (P_i, −c·β^i), then in the final line merge all (with scale 1).
-        let term_inputs: Vec<
-            MsmInput<<Self::Group as CurveGroup>::Affine, <Self::Group as PrimeGroup>::ScalarField>,
-        > = msm_terms
+        let msm_terms_for_prover_response = self.msm_terms(&prover_response);
+
+        let msm_terms = msm_terms_for_prover_response
             .into_iter()
             .zip(prover_first_message.clone().into_iter())
-            .zip(statement.clone().into_iter())
-            .zip(powers_of_beta.iter().copied())
-            .map(|(((term, A), P), beta_power)| {
+            .zip(public_statement.clone().into_iter())
+            .map(|((term, A), P)| {
                 let mut bases = term.bases().to_vec();
                 bases.push(A);
                 bases.push(P);
                 let mut scalars: Vec<<Self::Group as PrimeGroup>::ScalarField> =
-                    term.scalars().iter().map(|s| *s * beta_power).collect();
-                scalars.push(-beta_power);
-                scalars.push(-c * beta_power);
+                    term.scalars().iter().map(|s| *s).collect();
+                scalars.push(-<Self::Group as PrimeGroup>::ScalarField::ONE);
+                scalars.push(-challenge);
                 MsmInput::new(bases, scalars).expect("sigma protocol MSM term")
             })
             .collect();
-        debug_assert_eq!(
-            term_inputs.len(),
-            n,
-            "merge_msm_terms: msm_terms iterator length mismatch"
-        );
-        debug_assert_eq!(
-            powers_of_beta.len(),
-            n,
-            "merge_msm_terms: powers_of_beta iterator length mismatch"
-        );
-        let refs: Vec<
-            &MsmInput<
-                <Self::Group as CurveGroup>::Affine,
-                <Self::Group as PrimeGroup>::ScalarField,
-            >,
-        > = term_inputs.iter().collect();
-        let ones: Vec<<Self::Group as PrimeGroup>::ScalarField> = (0..refs.len())
-            .map(|_| <Self::Group as PrimeGroup>::ScalarField::ONE)
-            .collect();
-        merge_scaled_msm_terms::<Self::Group>(&refs, &ones)
+
+        msm_terms
     }
 }
 
@@ -372,44 +261,6 @@ impl<F: PrimeField, W: Witness<F>> Witness<F> for Vec<W> {
     fn rand<R: RngCore + CryptoRng>(&self, rng: &mut R) -> Self {
         self.iter().map(|elem| elem.rand(rng)).collect()
     }
-}
-
-/// Computes the Fiat–Shamir challenge and verifier β-powers for a Σ-protocol,
-/// with an explicit total length for the powers (e.g. `len1 + len2` for two-component protocols).
-/// Callers can split the returned `powers_of_beta` slice as needed.
-#[allow(non_snake_case)]
-pub fn verifier_challenges_with_length<
-    Ct: Serialize,
-    F: PrimeField,
-    H: homomorphism::Trait + CanonicalSerialize,
-    R: RngCore + CryptoRng,
->(
-    cntxt: &Ct,
-    hom: &H,
-    public_statement: &H::CodomainNormalized,
-    prover_first_message: &H::CodomainNormalized,
-    dst: &[u8],
-    number_of_beta_powers: usize,
-    rng: &mut R,
-) -> (F, Vec<F>)
-where
-    H::Domain: Witness<F>,
-    H::CodomainNormalized: Statement,
-{
-    let c = fiat_shamir_challenge_for_sigma_protocol::<_, F, _>(
-        cntxt,
-        hom,
-        public_statement,
-        prover_first_message,
-        dst,
-    );
-    let powers_of_beta = if number_of_beta_powers > 1 {
-        let beta = sample_field_element(rng);
-        utils::powers(beta, number_of_beta_powers)
-    } else {
-        vec![F::ONE]
-    };
-    (c, powers_of_beta)
 }
 
 /// Computes the Fiat–Shamir challenge for a Σ-protocol instance.

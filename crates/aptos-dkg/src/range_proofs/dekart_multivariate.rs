@@ -234,7 +234,6 @@ impl<E: Pairing> traits::BatchedRangeProof<E> for Proof<E> {
                 &TrivialShape((*blinding_comm).into()),
                 blinding_proof,
                 &(),
-                Some(1),
                 rng,
             )?;
         }

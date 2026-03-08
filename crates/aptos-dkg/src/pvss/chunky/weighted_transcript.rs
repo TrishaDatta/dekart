@@ -340,17 +340,24 @@ impl<const N: usize, P: FpConfig<N>, E: Pairing<ScalarField = Fp<P, N>>>
                 randomness: self.subtrs.Rs.clone(),
             },
         );
-        let num_chunks = num_chunks_per_scalar::<E::ScalarField>(pp.ell) as usize;
-        let pok_num_beta_powers =
-            1 + sc.get_total_weight() * num_chunks + sc.get_max_weight() * num_chunks;
-        let pok_msm_terms = hom
-            .msm_terms_for_verify::<_, hkzg_chunked_elgamal::Homomorphism<'static, E>, _>(
-                &pok_statement,
-                &self.sharing_proof.SoK,
-                &sok_cntxt,
-                Some(pok_num_beta_powers),
-                rng,
-            );
+        let prover_first_message = self
+            .sharing_proof
+            .SoK
+            .prover_commitment()
+            .expect("SoK must contain commitment for Fiat–Shamir");
+        let c_pok = sigma_protocol::traits::fiat_shamir_challenge_for_sigma_protocol(
+            &sok_cntxt,
+            &hom,
+            &pok_statement,
+            prover_first_message,
+            &sigma_protocol::Trait::dst(&hom),
+        );
+        let pok_msm_terms = hom.msm_terms_for_verify_with_challenge(
+            &pok_statement,
+            prover_first_message,
+            &self.sharing_proof.SoK.z,
+            c_pok,
+        );
 
         let ldt = LowDegreeTest::random(
             rng,
@@ -385,11 +392,12 @@ impl<const N: usize, P: FpConfig<N>, E: Pairing<ScalarField = Fp<P, N>>>
 
         let weighted_Cs_msm =
             MsmInput::new(weighted_Cs_base, weighted_Cs_scalar).expect("weighted_Cs MSM terms");
-        let merged_g1 =
-            msm::merge_scaled_msm_terms::<E::G1>(&[&pok_msm_terms, &weighted_Cs_msm], &[
-                gamma,
-                E::ScalarField::ONE,
-            ]);
+        let pok_merged = msm::merge_msm_inputs::<E::G1Affine, _>(&pok_msm_terms, rng);
+        let g1_inputs = vec![pok_merged, weighted_Cs_msm];
+        let merged_g1 = msm::merge_msm_inputs_with_scales::<E::G1Affine>(&g1_inputs, &[
+            gamma,
+            E::ScalarField::ONE,
+        ]);
         let combined_G1 = E::G1::msm(merged_g1.bases(), merged_g1.scalars())
             .expect("Failed to compute merged G1 MSM in chunky");
 
@@ -397,11 +405,11 @@ impl<const N: usize, P: FpConfig<N>, E: Pairing<ScalarField = Fp<P, N>>>
         let n = sc.get_total_weight();
         let weighted_Vs_msm = MsmInput::new(Vs_flat[..n].to_vec(), powers_of_beta[..n].to_vec())
             .expect("weighted_Vs MSM terms");
-        let merged_g2 =
-            msm::merge_scaled_msm_terms::<E::G2>(&[&ldt_msm_terms, &weighted_Vs_msm], &[
-                gamma_sq,
-                E::ScalarField::ONE,
-            ]);
+        let g2_inputs = vec![ldt_msm_terms, weighted_Vs_msm];
+        let merged_g2 = msm::merge_msm_inputs_with_scales::<E::G2Affine>(&g2_inputs, &[
+            gamma_sq,
+            E::ScalarField::ONE,
+        ]);
         let combined_G2 = E::G2::msm(merged_g2.bases(), merged_g2.scalars())
             .expect("Failed to compute merged G2 MSM in chunky");
 
