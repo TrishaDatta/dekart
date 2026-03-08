@@ -29,17 +29,21 @@ use std::{fmt::Debug, hash::Hash};
 
 pub trait Trait:
     homomorphism::Trait<Domain: Witness<Self::Scalar>, CodomainNormalized: Statement> + Sized
+// Need `Sized`` here because of `Proof<Self::Scalar, Self>`?
 {
-    type Scalar: PrimeField; // CanonicalSerialize + CanonicalDeserialize + Clone + Debug + Eq;
+    type Scalar: PrimeField; // Because Fiat-Shamir challenges use `PrimeField`
 
-    /// Shape of verifier batch size: mirrors the homomorphism structure.
-    /// - For a leaf (single MSM/codomain): `usize` (number of components).
-    /// - For a tuple (f, g): `(H1::VerifierBatchSize, H2::VerifierBatchSize)`.
-    /// E.g. for tuple(f, g) with f itself a tuple, use `Option<((usize, usize), usize)>`.
+    /// Shape of verifier batch size: mirrors the MSM homomorphism structure.
+    /// - For a leaf (single MSM/codomain): `Option<usize>` (number of components).
+    /// - For a tuple (f, g) with different MSM groups: `Option<(H1::VerifierBatchSize, H2::VerifierBatchSize)>`.
+    /// E.g. for tuple(f, g) with f itself a basic tuple, might want to use `Option<((usize, usize), usize)>`, etc.
+    /// - `None`: infer from `public_statement` (may clone to count, so performance may be degraded).
+    /// - `Some(shape)`: use the given shape; avoids cloning.
     type VerifierBatchSize;
 
     fn dst(&self) -> Vec<u8>;
 
+    /// Prove a sigma protocol proof. Returns the proof and the normalized statement.
     fn prove<Ct: Serialize, R: RngCore + CryptoRng>(
         &self,
         witness: &Self::Domain,
@@ -50,11 +54,7 @@ pub trait Trait:
         prove_homomorphism(self, witness, statement, cntxt, true, rng, &self.dst())
     }
 
-    /// Verify a sigma protocol proof.
-    ///
-    /// `verifier_batch_size`: per-component batch sizes, shape mirrors the homomorphism.
-    /// - `None`: infer from `public_statement` (may clone to count, so performance may be degraded).
-    /// - `Some(shape)`: use the given shape; avoids cloning when the caller already has it.
+    /// Verify a sigma protocol proof. Returns `Ok(())` if the proof is valid, `Err(anyhow::Error)` otherwise.
     fn verify<Ct: Serialize, R: RngCore + CryptoRng>(
         &self,
         public_statement: &Self::CodomainNormalized,
@@ -65,7 +65,7 @@ pub trait Trait:
     ) -> anyhow::Result<()> {
         let prover_first_message = proof
             .prover_commitment()
-            .expect("proof must contain commitment for Fiat–Shamir"); // TODO: code required function for this
+            .expect("proof must contain commitment for Fiat–Shamir"); // TODO: implement required function for this
         let c = fiat_shamir_challenge_for_sigma_protocol::<_, Self::Scalar, _>(
             cntxt,
             self,
@@ -85,8 +85,8 @@ pub trait Trait:
 
     /// Verify the equations coming from the proof given an explicit Fiat–Shamir challenge
     /// (derived from the proof's first message).
-    /// The reason for this method is tuple homomorphisms - we need to verify each component
-    /// of the tuple homomorphism separately, but they have the same challenge.
+    /// The reason for this separatemethod is tuple homomorphisms - we need to verify each component
+    /// of the tuple homomorphism separately, but using the same challenge.
     fn verify_with_challenge<R: RngCore + CryptoRng>(
         &self,
         public_statement: &Self::CodomainNormalized,
@@ -98,6 +98,7 @@ pub trait Trait:
     ) -> anyhow::Result<()>;
 }
 
+// This is the default implementation for the leaf case (single MSM/codomain)
 impl<T: CurveGroupTrait> Trait for T {
     type Scalar = T::Scalar;
     type VerifierBatchSize = usize;
@@ -115,6 +116,7 @@ impl<T: CurveGroupTrait> Trait for T {
         verifier_batch_size: Option<Self::VerifierBatchSize>,
         rng: &mut R,
     ) -> anyhow::Result<()> {
+        // the verifier's random element for batching (not the Fiat-Shamir challenge) is called "β" throughout the codebase
         let number_of_beta_powers =
             verifier_batch_size.unwrap_or_else(|| public_statement.clone().into_iter().count());
         let powers_of_beta = if number_of_beta_powers > 1 {
@@ -123,6 +125,9 @@ impl<T: CurveGroupTrait> Trait for T {
         } else {
             vec![<<Self as CurveGroupTrait>::Group as PrimeGroup>::ScalarField::ONE]
         };
+
+        // Using β-powers, compute the batched MSM terms for the prover's response
+        // and check that the resulting MSM evaluates to the group identity
         let msm_terms_for_prover_response = self.msm_terms(response);
         let msm_terms = Self::merge_msm_terms(
             msm_terms_for_prover_response.into_iter().collect(),
@@ -136,6 +141,7 @@ impl<T: CurveGroupTrait> Trait for T {
     }
 }
 
+#[allow(non_snake_case)]
 pub trait CurveGroupTrait:
     fixed_base_msms::Trait<
         Domain: Witness<<Self::Group as PrimeGroup>::ScalarField>,
@@ -178,7 +184,6 @@ pub trait CurveGroupTrait:
         Ok(())
     }
 
-    #[allow(non_snake_case)]
     fn compute_verifier_challenges<Ct, R: RngCore + CryptoRng>(
         &self,
         public_statement: &Self::CodomainNormalized,
@@ -192,7 +197,7 @@ pub trait CurveGroupTrait:
     )
     where
         Ct: Serialize,
-        // H: homomorphism::Trait<Domain = Self::Domain, Codomain = Self::Codomain>, // will probably need this if we use `FirstProofItem<F, H>` instead
+        // H: homomorphism::Trait<Domain = Self::Domain, Codomain = Self::Codomain>, // OLD comment: will probably need this if we use `FirstProofItem<F, H>` instead
     {
         let number_of_beta_powers =
             verifier_batch_size.unwrap_or_else(|| public_statement.clone().into_iter().count());
@@ -208,7 +213,6 @@ pub trait CurveGroupTrait:
     }
 
     // Returns the MSM terms that `verify()` needs
-    #[allow(non_snake_case)]
     fn msm_terms_for_verify<Ct: Serialize, H, R: RngCore + CryptoRng>(
         &self,
         public_statement: &Self::CodomainNormalized,
@@ -249,10 +253,13 @@ pub trait CurveGroupTrait:
         )
     }
 
-    /// The MSM terms of the sigma protocol. Instead of computing the answer, returning the terms in this form.
-    /// This is useful for combining with the MSM terms of other protocols, but note that beta powers are already being
-    /// added here because it's convenient (and slightly faster) to do that when the c factor is being added
-    #[allow(non_snake_case)]
+    /// The MSM terms of the sigma protocol. Instead of computing whether the MSM evaluates to the group identity,
+    /// return the terms in this batched form. This is useful for combining with the MSM terms of other protocols.
+    ///
+    /// Note that beta powers are already being added here because at the time it seemed convenient (and slightly faster)
+    /// to do that when the verifier's challenge is also being added. With hindsight... maybe not. Also means we might be
+    /// building the hash table multiple times unnecessarily. TODO: just output a basic Vec<MsmInput> instead by adding
+    /// A and P^c, don't use β-powers here
     fn merge_msm_terms(
         msm_terms: Vec<
             MsmInput<<Self::Group as CurveGroup>::Affine, <Self::Group as PrimeGroup>::ScalarField>,
@@ -266,7 +273,7 @@ pub trait CurveGroupTrait:
         <Self::Group as CurveGroup>::Affine: Copy + Eq + Hash,
     {
         let n = msm_terms.len();
-        // Per index: (term_i * β^i) ∪ (A_i, −β^i) ∪ (P_i, −c·β^i), then in the final line merge all with scale 1.
+        // Per index: (terms_i * β^i) ∪ (A_i, −β^i) ∪ (P_i, −c·β^i), then in the final line merge all (with scale 1).
         let term_inputs: Vec<
             MsmInput<<Self::Group as CurveGroup>::Affine, <Self::Group as PrimeGroup>::ScalarField>,
         > = msm_terms
