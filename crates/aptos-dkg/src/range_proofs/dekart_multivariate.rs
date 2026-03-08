@@ -61,7 +61,7 @@ pub struct VerificationKey<E: Pairing> {
     xi_1: E::G1Affine,
     last_tau: E::G1Affine,
     vk_hkzg: univariate_hiding_kzg::VerificationKey<E>,
-    /// Number of variables for sumcheck (log2 of domain size)
+    /// Number of variables, needed for sumcheck (log2 of domain size)
     pub(crate) num_variables: usize,
     srs: Srs<E>,
 }
@@ -73,8 +73,8 @@ pub struct Proof<E: Pairing> {
     pub blinding_poly_comm: Option<E::G1Affine>,
     /// Proof that C_β is of the form β·eq_0 (None if blinding was not used)
     pub blinding_poly_proof: Option<two_term_msm::Proof<E::G1>>,
-    pub f_j_commitments: Vec<E::G1Affine>,
-    pub g_i_commitments: Vec<E::G1Affine>,
+    pub f_j_comms: Vec<E::G1Affine>,
+    pub g_i_comms: Vec<E::G1Affine>,
     pub H_g: E::ScalarField,
     pub sumcheck_proof: ClearSumcheckProof<E::ScalarField>,
     pub y_f: E::ScalarField,
@@ -102,7 +102,7 @@ impl<E: Pairing> traits::BatchedRangeProof<E> for Proof<E> {
     const DST: &[u8] = b"MULTIVARIATE_DEKART_RANGE_PROOF_DST";
 
     fn maul(&mut self) {
-        if let Some(c) = self.f_j_commitments.first_mut() {
+        if let Some(c) = self.f_j_comms.first_mut() {
             *c = (c.into_group() + E::G1::generator()).into_affine();
         }
     }
@@ -246,11 +246,11 @@ impl<E: Pairing> traits::BatchedRangeProof<E> for Proof<E> {
         let start = Instant::now();
         <merlin::Transcript as RangeProof<E, Proof<E>>>::append_f_j_commitments(
             &mut trs,
-            &self.f_j_commitments,
+            &self.f_j_comms,
         );
         <merlin::Transcript as RangeProof<E, Proof<E>>>::append_g_i_commitments(
             &mut trs,
-            &self.g_i_commitments,
+            &self.g_i_comms,
         );
         <merlin::Transcript as RangeProof<E, Proof<E>>>::append_hypercube_sum(&mut trs, &self.H_g);
 
@@ -406,7 +406,7 @@ impl<E: Pairing> traits::BatchedRangeProof<E> for Proof<E> {
             combined_bases.push(*bc);
             combined_scalars.push(E::ScalarField::ONE);
         }
-        combined_bases.extend(self.f_j_commitments.iter().copied());
+        combined_bases.extend(self.f_j_comms.iter().copied());
         combined_scalars.extend(hat_c_powers.iter().skip(1).copied());
         let combined_comm =
             E::G1::msm(&combined_bases, &combined_scalars).expect("combined commitment MSM");
@@ -425,7 +425,7 @@ impl<E: Pairing> traits::BatchedRangeProof<E> for Proof<E> {
         );
 
         let g_commitment_msms: Vec<MsmInput<E::G1Affine, E::ScalarField>> = self
-            .g_i_commitments
+            .g_i_comms
             .iter()
             .map(|&affine| {
                 MsmInput::new(vec![affine], vec![E::ScalarField::ONE]).expect("single term")
@@ -506,11 +506,11 @@ impl<E: Pairing> traits::BatchedRangeProof<E> for Proof<E> {
     }
 }
 
-/// Prover with optional blinding. When `use_blinding` is false, β=0 and no C_β is produced.
+/// Prover with optional blinding. When `use_blinding` is false, no C_β is produced.
 #[allow(non_snake_case)]
 pub fn prove_impl<E: Pairing, R: RngCore + CryptoRng>(
     pk: &ProverKey<E>,
-    values: &[E::ScalarField],
+    values: &[E::ScalarField], // Might make sense to start this array with β
     ell: u8,
     comm: &univariate_hiding_kzg::Commitment<E>,
     rho: &univariate_hiding_kzg::CommitmentRandomness<E::ScalarField>,
@@ -541,7 +541,7 @@ pub fn prove_impl<E: Pairing, R: RngCore + CryptoRng>(
     <merlin::Transcript as RangeProof<E, Proof<E>>>::append_public_statement(
         &mut trs,
         PublicStatement {
-            n: values.len(),
+            n: values.len(), // So this is a power of two, minus one
             ell,
             comm: comm.clone(),
         },
@@ -629,17 +629,8 @@ pub fn prove_impl<E: Pairing, R: RngCore + CryptoRng>(
             pk.ck.xi_1 * *r_i + sum // TODO: could turn this into a 3-term MSM, should be faster
         })
         .collect();
-    let f_j_comms = E::G1::normalize_batch(&f_j_comms_proj);
     #[cfg(feature = "range_proof_timing_multivariate")]
     print_cumulative("hat_f_j commitments (hom.apply loop)", start.elapsed());
-
-    #[cfg(feature = "range_proof_timing_multivariate")]
-    let start = Instant::now();
-    // Step 3f:
-    <merlin::Transcript as RangeProof<E, Proof<E>>>::append_f_j_commitments(&mut trs, &f_j_comms);
-
-    #[cfg(feature = "range_proof_timing_multivariate")]
-    print_cumulative("transcript append hat_f_j_comms", start.elapsed());
 
     #[cfg(feature = "range_proof_timing_multivariate")]
     let start = Instant::now();
@@ -662,15 +653,22 @@ pub fn prove_impl<E: Pairing, R: RngCore + CryptoRng>(
         Vec<E::ScalarField>,
         E::ScalarField,
     ) = zksc_send_mask(&srs, 4, num_vars, rng);
-    let g_j_comms = E::G1::normalize_batch(&g_i_commitments_proj);
+
+    let n_f = f_j_comms_proj.len();
+    let mut combined = f_j_comms_proj;
+    combined.extend(&g_i_commitments_proj);
+    let normalized = E::G1::normalize_batch(&combined);
+    let f_j_comms = normalized[..n_f].to_vec();
+    let g_i_comms = normalized[n_f..].to_vec();
 
     #[cfg(feature = "range_proof_timing_multivariate")]
     print_cumulative("zksc_send_mask (g_is, g_comm, G)", start.elapsed());
 
     #[cfg(feature = "range_proof_timing_multivariate")]
     let start = Instant::now();
-    // Step 4b: Add {C_{g_i}} and H_g to the Fiat–Shamir transcript. // TODO: maybe combine with 3f for better batching
-    <merlin::Transcript as RangeProof<E, Proof<E>>>::append_g_i_commitments(&mut trs, &g_j_comms);
+    // Step 4b: Add {C_{f_j}}, {C_{g_i}} and H_g to the Fiat–Shamir transcript.
+    <merlin::Transcript as RangeProof<E, Proof<E>>>::append_f_j_commitments(&mut trs, &f_j_comms);
+    <merlin::Transcript as RangeProof<E, Proof<E>>>::append_g_i_commitments(&mut trs, &g_i_comms);
     <merlin::Transcript as RangeProof<E, Proof<E>>>::append_hypercube_sum(&mut trs, &H_g);
     #[cfg(feature = "range_proof_timing_multivariate")]
     print_cumulative("transcript append g_comm + H_g", start.elapsed());
@@ -881,19 +879,12 @@ pub fn prove_impl<E: Pairing, R: RngCore + CryptoRng>(
     #[cfg(feature = "range_proof_timing_multivariate")]
     print_cumulative("batched opening", start.elapsed());
 
-    let f_j_commitments: Vec<E::G1Affine> =
-        f_j_comms_proj.iter().map(|g| g.into_affine()).collect();
-    let g_i_commitments: Vec<E::G1Affine> = g_i_commitments_proj
-        .iter()
-        .map(|g| g.into_affine())
-        .collect();
-
     Proof {
         blinding_poly_comm: comm_blinding_poly.map(|c| c.into_affine()),
         blinding_poly_proof: beta_sigma_proof,
         sumcheck_proof: sumcheck_proof.0,
-        f_j_commitments,
-        g_i_commitments,
+        f_j_comms,
+        g_i_comms,
         H_g,
         y_f,
         y_js, // Step 8: {y_j}_{1≤j≤ℓ} = f_j(x) at sumcheck point x
@@ -1370,7 +1361,7 @@ mod tests {
             3,
             "sumcheck rounds = num_vars"
         );
-        assert_eq!(proof.f_j_commitments.len(), max_ell as usize);
+        assert_eq!(proof.f_j_comms.len(), max_ell as usize);
         assert_eq!(
             proof.y_js.len(),
             max_ell as usize,

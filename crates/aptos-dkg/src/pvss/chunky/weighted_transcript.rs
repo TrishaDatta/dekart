@@ -154,33 +154,21 @@ impl<const N: usize, P: FpConfig<N>, E: Pairing<ScalarField = Fp<P, N>>> traits:
             .get_threshold_config()
             .sample_polynomial_and_compute_shares(*s.get_secret_a(), rng);
 
-        // Encrypt the chunked shares and generate the sharing proof
+        // Step 3-6: Encrypt the chunked shares and generate the sharing proof
         let (Cs, Rs, sharing_proof) =
             Self::encrypt_chunked_shares(&f_evals, eks, pp, sc, sok_cntxt, rng);
 
-        // Step 2 (which comes a bit later because we modify f_evals): Commit to polynomial evaluations + constant term using batch_mul
+        // Step 2 (which comes after 3-6 here because we modify `f_evals`):
+        // Commit to polynomial evaluations + constant term using batch_mul
         f_evals.push(f[0]);
         let flattened_Vs_proj = arkworks::batch_mul::<E::G2>(&pp.G2_table, &f_evals);
 
         debug_assert_eq!(flattened_Vs_proj.len(), sc.get_total_weight() + 1);
 
-        // Remainder of this function is just batch-normalising the G2 elements and re-splitting into V0 and per-player Vs (same layout as Vs_proj).
-        let Vs_proj = sc.group_by_player(&flattened_Vs_proj); // last item of flattened_Vs_proj is f(0), won't appear in Vs_proj
-        let V0_proj = *flattened_Vs_proj.last().unwrap();
-
-        // Batch normalize G2 elements and re-split into V0 and per-player Vs (same layout as Vs_proj).
-        let mut g2_elems = vec![V0_proj];
-        for row in &Vs_proj {
-            g2_elems.extend(row.iter().copied());
-        }
-        let g2_affine = E::G2::normalize_batch(&g2_elems);
-        let mut g2_iter = g2_affine.into_iter();
-        let V0 = g2_iter.next().unwrap();
-        let Vs: Vec<Vec<E::G2Affine>> = Vs_proj
-            .iter()
-            .map(|row| row.iter().map(|_| g2_iter.next().unwrap()).collect())
-            .collect();
-        debug_assert!(g2_iter.next().is_none());
+        // Remainder of this function is just batch-normalising the G2 elements and re-splitting into V0 and per-player Vs.
+        let g2_affine = E::G2::normalize_batch(&flattened_Vs_proj);
+        let Vs = sc.group_by_player(&g2_affine); // Doesn't use the last value
+        let V0 = *g2_affine.last().unwrap();
 
         Transcript {
             dealer: *dealer,
@@ -219,11 +207,7 @@ impl<const N: usize, P: FpConfig<N>, E: Pairing<ScalarField = Fp<P, N>>> Transcr
     /// Encrypts chunked shares and builds the sharing proof (SoK + range proof).
     /// Panics if `pp.pk_range_proof.ck_S` is not a Lagrange SRS basis (same requirement as verify).
     #[allow(non_snake_case)]
-    pub fn encrypt_chunked_shares<
-        'a,
-        A: Serialize + Clone,
-        R: rand_core::RngCore + rand_core::CryptoRng,
-    >(
+    pub fn encrypt_chunked_shares<'a, A: Serialize + Clone, R: RngCore + CryptoRng>(
         f_evals: &[E::ScalarField],
         eks: &[keys::EncryptPubKey<E>],
         pp: &PublicParameters<E>,
@@ -235,6 +219,7 @@ impl<const N: usize, P: FpConfig<N>, E: Pairing<ScalarField = Fp<P, N>>> Transcr
         Vec<Vec<E::G1Affine>>,
         SharingProof<E>,
     ) {
+        // Step 3-4a: prepare the witness data
         let ChunkedWitnessData {
             witness,
             f_evals_chunked_flat,

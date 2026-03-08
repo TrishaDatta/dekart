@@ -2,6 +2,7 @@
 // Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 //! SHPLONKeD opening proof: generalized batch opening with optional hiding and homomorphism φ.
+//! See here: https://waamm.github.io/posts/shplonked/
 //!
 //! Implements PCS.BatchOpen and PCS.BatchVerify per the SHPLONKeD spec: batch opening of
 //! univariate polynomials f₁,…,fₙ over evaluation sets S_i = S_i^rev ⊔ S_i^hid, with

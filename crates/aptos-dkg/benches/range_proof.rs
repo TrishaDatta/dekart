@@ -9,13 +9,12 @@ use aptos_crypto::arkworks::GroupGenerators;
 use aptos_dkg::{
     range_proofs::{
         dekart_multivariate::Proof as DekartMultivariate,
-        dekart_univariate::Proof as UnivariateDeKART,
         dekart_univariate_v2::Proof as UnivariateDeKARTv2, traits::BatchedRangeProof,
     },
     utils::test_utils::{self},
 };
 use ark_bls12_381::Bls12_381;
-use ark_bn254::Bn254;
+// use ark_bn254::Bn254;
 use ark_ec::pairing::Pairing;
 use criterion::{
     criterion_group, criterion_main, measurement::WallTime, BenchmarkGroup, BenchmarkId, Criterion,
@@ -24,10 +23,9 @@ use rand::{rngs::StdRng, SeedableRng};
 
 /// WARNING: Do not change this, since our range proof benchmark instructions in
 /// `crates/aptos-crypto/README.md` rely on it.
-const BROKEN_DEKART_RS_SCHEME_NAME: &str = "dekart-rs-broken";
 const DEKART_RS_SCHEME_NAME: &str = "dekart-rs";
 const DEKART_MULTIVARIATE_SCHEME_NAME: &str = "dekart-multivar";
-const BN254: &str = "bn254";
+// const BN254: &str = "bn254";
 const BLS12_381: &str = "bls12-381";
 
 /// WARNING: These are the relevant batch sizes we want benchmarked to compare against Bulletproofs

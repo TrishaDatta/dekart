@@ -151,7 +151,7 @@ impl<const N: usize, P: FpConfig<N>, E: Pairing<ScalarField = Fp<P, N>>> traits:
         Transcript {
             dealer: *dealer,
             subtrs: Subtranscript {
-                V0: V0_proj.into_affine(),
+                V0: V0_proj.into_affine(), // TODO: the Vs were already affine this time because they're serialized as a statement; ideally should do this all together
                 Vs,
                 Cs,
                 Rs,

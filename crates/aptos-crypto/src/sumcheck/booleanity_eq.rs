@@ -5,18 +5,22 @@
 //!   F(x) = [ sum_{j=1}^m c^j * MLE[j](x) * (1 - MLE[j](x)) ] * eq_t(x) * (1 - eq_0(x))
 //! where eq_t(x) = eq(x, t), eq_0(x) = eq(x, 0), and m is a fixed count (e.g. 16).
 //! Here **t** is a vector of n field elements (arbitrary indices), not necessarily on the
-//! boolean hypercube: eq_t(x) = ∏_i (x_i·t_i + (1−x_i)(1−t_i)) for x ∈ {0,1}^n.
+//! boolean hypercube: eq_t(x) = ∏_i (x_i·t_i + (1−x_i)(1−t_i)) for any x.
 //! The claim is sum_{x ∈ {0,1}^n} F(x); (1−eq_0(x)) excludes the origin (x=0) from the sum.
 //! Adapted from the same pattern as Jolt's booleanity sumcheck (scaled MLE*(1-MLE) with eq factors).
 
 use crate::sumcheck::{
     dense_poly::{BindingOrder, DensePolynomial},
     field::SumcheckField,
-    traits::{SumcheckInstanceParams, SumcheckInstanceProver, SumcheckInstanceVerifier},
+    traits::{
+        OpeningAccumulator, SumcheckInstanceParams, SumcheckInstanceProver,
+        SumcheckInstanceVerifier,
+    },
     unipoly::UniPoly,
 };
 use std::marker::PhantomData;
 
+// This is the degree of F(x)
 const DEGREE: usize = 4;
 
 /// Parameters for the booleanity-eq sumcheck.
@@ -35,7 +39,7 @@ impl<F: SumcheckField> SumcheckInstanceParams<F> for BooleanityEqParams<F> {
         self.num_rounds
     }
 
-    fn input_claim(&self, _: &dyn crate::sumcheck::traits::OpeningAccumulator<F>) -> F {
+    fn input_claim(&self, _: &dyn OpeningAccumulator<F>) -> F {
         self.initial_claim.unwrap_or(F::zero())
     }
 }
@@ -46,12 +50,12 @@ impl<F: SumcheckField> SumcheckInstanceParams<F> for BooleanityEqParams<F> {
 pub struct BooleanityEqSumcheckProver<F: SumcheckField> {
     params: BooleanityEqParams<F>,
     polys: Vec<DensePolynomial<F>>,
-    #[allow(dead_code)]
-    c: F,
     c_powers: Vec<F>,
     #[allow(dead_code)]
     t: Vec<F>,
     eq_t_evals: Vec<F>,
+    /// (1 - eq_0(x)) evals. Initially 0 at origin, 1 elsewhere; we store and bind each round
+    /// because after folding the values are no longer that simple pattern.
     one_minus_eq_0_evals: Vec<F>,
 }
 
@@ -99,7 +103,7 @@ impl<F: SumcheckField> BooleanityEqSumcheckProver<F> {
         let mut one_minus_eq_0_evals = vec![F::one(); n];
         one_minus_eq_0_evals[0] = F::zero();
 
-        // claim = sum_{g ∈ [0,2^n)} F(g)
+        // Claim: sum over the boolean hypercube {0,1}^n (g indexes the 2^n points, MSB-first).
         let initial_claim = (0..n)
             .map(|g| {
                 let eq_t_g = eq_t_evals[g];
@@ -121,7 +125,6 @@ impl<F: SumcheckField> BooleanityEqSumcheckProver<F> {
                 _marker: PhantomData,
             },
             polys,
-            c,
             c_powers,
             t,
             eq_t_evals,
@@ -130,6 +133,7 @@ impl<F: SumcheckField> BooleanityEqSumcheckProver<F> {
     }
 
     /// Convenience: build prover when t is a hypercube point given by index in [0, 2^n), t ≠ 0.
+    /// TODO: remove?
     pub fn new_with_hypercube_point(
         num_vars: usize,
         mle_evals: Vec<Vec<F>>,

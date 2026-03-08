@@ -9,9 +9,22 @@ pub struct UniPoly<F: SumcheckField> {
     pub coeffs: Vec<F>,
 }
 
+/// Univariate polynomial with the linear coefficient omitted (proof compression).
+///
+/// Let H(x) = c_0 + c_1·x + c_2·x² + … . In sumcheck, the verifier learns the "hint"
+/// e = H(0) + H(1) (the running claim for that round). So:
+///
+///   e = H(0) + H(1) = c_0 + (c_0 + c_1 + c_2 + …) = 2·c_0 + c_1 + c_2 + c_3 + … .
+///
+/// The prover sends [c_0, c_2, c_3, …] (all coefficients except c_1). The verifier recovers
+///
+///   c_1 = e − 2·c_0 − c_2 − c_3 − … ,
+///
+/// then evaluates H(r) = c_0 + c_1·r + c_2·r² + … at the challenge r. One field element
+/// per round is saved by not sending c_1.
 #[derive(Clone, Debug, CanonicalSerialize, CanonicalDeserialize)]
 pub struct CompressedUniPoly<F: SumcheckField> {
-    /// All coefficients except the linear term (recovered from hint).
+    /// Constant term, then x^2, x^3, ... (linear coefficient recovered from hint).
     pub coeffs_except_linear_term: Vec<F>,
 }
 
