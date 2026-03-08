@@ -11,7 +11,7 @@ use crate::{
         chunky::{
             chunked_elgamal::{self, num_chunks_per_scalar},
             chunked_scalar_mul, hkzg_chunked_elgamal,
-            hkzg_chunked_elgamal::ChunkedWitnessData,
+            hkzg_chunked_elgamal::WitnessData,
             hkzg_chunked_elgamal_commit,
             input_secret::InputSecret,
             keys,
@@ -203,7 +203,7 @@ impl<const N: usize, P: FpConfig<N>, E: Pairing<ScalarField = Fp<P, N>>> Transcr
         Vec<Vec<E::G2Affine>>,
         SharingProof<E>,
     ) {
-        let ChunkedWitnessData {
+        let WitnessData {
             witness,
             f_evals_chunked_flat,
         } = hkzg_chunked_elgamal::prepare_chunked_witness(f_evals, pp, sc, rng);
@@ -235,7 +235,7 @@ impl<const N: usize, P: FpConfig<N>, E: Pairing<ScalarField = Fp<P, N>>> Transcr
         let TupleCodomainShape(
             TupleCodomainShape(
                 range_proof_commitment,
-                chunked_elgamal::WeightedCodomainShape {
+                chunked_elgamal::CodomainShape {
                     chunks: Cs,
                     randomness: Rs,
                 },
@@ -360,7 +360,7 @@ impl<const N: usize, P: FpConfig<N>, E: Pairing<ScalarField = Fp<P, N>>>
                 sigma_protocol::homomorphism::TrivialShape(
                     self.sharing_proof.range_proof_commitment.0.clone(),
                 ),
-                chunked_elgamal::WeightedCodomainShape {
+                chunked_elgamal::CodomainShape {
                     chunks: self.subtrs.Cs.clone(),
                     randomness: self.subtrs.Rs.clone(),
                 },

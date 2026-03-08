@@ -19,7 +19,7 @@ use crate::{
         chunky::{
             chunked_elgamal::{self, num_chunks_per_scalar},
             hkzg_chunked_elgamal,
-            hkzg_chunked_elgamal::ChunkedWitnessData,
+            hkzg_chunked_elgamal::WitnessData,
             input_secret::InputSecret,
             keys,
             public_parameters::PublicParameters,
@@ -220,7 +220,7 @@ impl<const N: usize, P: FpConfig<N>, E: Pairing<ScalarField = Fp<P, N>>> Transcr
         SharingProof<E>,
     ) {
         // Step 3-4a: prepare the witness data
-        let ChunkedWitnessData {
+        let WitnessData {
             witness,
             f_evals_chunked_flat,
         } = hkzg_chunked_elgamal::prepare_chunked_witness(f_evals, pp, sc, rng);
@@ -249,7 +249,7 @@ impl<const N: usize, P: FpConfig<N>, E: Pairing<ScalarField = Fp<P, N>>> Transcr
         // Destructure the "public statement" of the above sigma protocol
         let TupleCodomainShape(
             range_proof_commitment,
-            chunked_elgamal::WeightedCodomainShape {
+            chunked_elgamal::CodomainShape {
                 chunks: Cs,
                 randomness: Rs,
             },
@@ -335,7 +335,7 @@ impl<const N: usize, P: FpConfig<N>, E: Pairing<ScalarField = Fp<P, N>>>
             sigma_protocol::homomorphism::TrivialShape(
                 self.sharing_proof.range_proof_commitment.0.clone(),
             ),
-            chunked_elgamal::WeightedCodomainShape {
+            chunked_elgamal::CodomainShape {
                 chunks: self.subtrs.Cs.clone(),
                 randomness: self.subtrs.Rs.clone(),
             },
