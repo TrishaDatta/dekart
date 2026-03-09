@@ -50,7 +50,10 @@ use ark_poly::{
     univariate::{DenseOrSparsePolynomial as DOSPoly, DensePolynomial},
     DenseUVPolynomial, EvaluationDomain, Polynomial, Radix2EvaluationDomain,
 };
-use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
+use ark_serialize::{
+    CanonicalDeserialize, CanonicalSerialize, Compress, Read, SerializationError, Valid, Validate,
+    Write,
+};
 use rand::{CryptoRng, RngCore};
 use std::fmt::Debug;
 
@@ -202,13 +205,41 @@ fn build_lagrange_cache<F: FftField>(
     (canonical, lagrange_cache)
 }
 
-#[derive(CanonicalSerialize, CanonicalDeserialize, Clone, Debug, PartialEq, Eq)]
+#[derive(CanonicalDeserialize, Clone, Debug, PartialEq, Eq)]
 pub struct Srs<E: Pairing> {
     pub(crate) taus_1: Vec<E::G1Affine>,
     pub(crate) xi_1: E::G1Affine,
     pub(crate) g_2: E::G2Affine,
     pub(crate) tau_2: E::G2Affine,
     pub(crate) xi_2: E::G2Affine,
+}
+
+impl<E: Pairing> CanonicalSerialize for Srs<E> {
+    fn serialize_with_mode<W: Write>(
+        &self,
+        mut writer: W,
+        compress: Compress,
+    ) -> Result<(), SerializationError> {
+        // First two entries of taus_1
+        for entry in self.taus_1.iter().take(2) {
+            entry.serialize_with_mode(&mut writer, compress)?;
+        }
+        self.xi_1.serialize_with_mode(&mut writer, compress)?;
+        self.g_2.serialize_with_mode(&mut writer, compress)?;
+        self.tau_2.serialize_with_mode(&mut writer, compress)?;
+        self.xi_2.serialize_with_mode(&mut writer, compress)?;
+        Ok(())
+    }
+
+    fn serialized_size(&self, compress: Compress) -> usize {
+        let g1_size = E::G1Affine::default().serialized_size(compress);
+        let first_two_count = self.taus_1.len().min(2);
+        first_two_count * g1_size
+            + self.xi_1.serialized_size(compress)
+            + self.g_2.serialized_size(compress)
+            + self.tau_2.serialized_size(compress)
+            + self.xi_2.serialized_size(compress)
+    }
 }
 
 /// Type of the sigma protocol statement: (com_y_hid, C_eval, φ(y)).

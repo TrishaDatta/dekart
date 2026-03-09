@@ -30,20 +30,13 @@ const BLS12_381: &str = "bls12-381";
 
 /// WARNING: These are the relevant batch sizes we want benchmarked to compare against Bulletproofs
 //const BATCH_SIZES: [usize; 11] = [1, 3, 7, 15, 31, 63, 127, 255, 511, 1023, 2047];
-const BATCH_SIZES: [usize; 3] = [1023, 16383, 131071]; //[1048575]; // 1048575100000, 1000000];
+const BATCH_SIZES: [usize; 2] = [1023, 131071]; //[1048575]; // 1048575100000, 1000000];
 
 /// WARNING: These are the relevant bit widths we want benchmarked to compare against Bulletproofs
-const BIT_WIDTHS: [u8; 4] = [8, 16, 32, 64]; // [8, 16, 32, 64];
+const BIT_WIDTHS: [u8; 2] = [8, 64]; // [8, 16, 32, 64];
 
 fn bench_groups(c: &mut Criterion) {
-    // bench_range_proof::<Bn254, UnivariateDeKART<Bn254>>(c, BROKEN_DEKART_RS_SCHEME_NAME, BN254);
-    // bench_range_proof::<Bls12_381, UnivariateDeKART<Bls12_381>>(
-    //     c,
-    //     BROKEN_DEKART_RS_SCHEME_NAME,
-    //     BLS12_381,
-    // );
-
-    // bench_range_proof::<Bn254, UnivariateDeKARTv2<Bn254>>(c, DEKART_RS_SCHEME_NAME, BN254);
+//    bench_range_proof::<Bn254, UnivariateDeKARTv2<Bn254>>(c, DEKART_RS_SCHEME_NAME, BN254);
     // bench_range_proof::<Bls12_381, UnivariateDeKARTv2<Bls12_381>>(
     //     c,
     //     DEKART_RS_SCHEME_NAME,

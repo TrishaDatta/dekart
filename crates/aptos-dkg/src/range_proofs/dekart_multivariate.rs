@@ -376,15 +376,25 @@ impl<E: Pairing> traits::BatchedRangeProof<E> for Proof<E> {
         for &y_j in self.y_js.iter().take(ell as usize) {
             trs.append_evaluation_points(&[y_j]);
         }
+        #[cfg(feature = "range_proof_timing_multivariate")]
+        print_cumulative("transcript y_f, y_js", start.elapsed());
 
         // Step 5b: Challenge hat_c.
+        #[cfg(feature = "range_proof_timing_multivariate")]
+        let start = Instant::now();
         let hat_c: E::ScalarField =
             <merlin::Transcript as RangeProof<E, Proof<E>>>::challenge_scalar(&mut trs);
         let hat_c_powers = powers(hat_c, ell as usize + 1);
+        #[cfg(feature = "range_proof_timing_multivariate")]
+        print_cumulative("hat_c + powers", start.elapsed());
 
         // Step 5c: Replay mPCS.ReduceToUnivariate (Zeromorph) to get x_challenge and form zeta_z_com.
+        #[cfg(feature = "range_proof_timing_multivariate")]
+        let start = Instant::now();
         let (y_challenge, x_challenge, z_challenge) =
             replay_challenges::<E>(&mut trs, &self.zeromorph_q_k_com, &self.zeromorph_q_hat_com);
+        #[cfg(feature = "range_proof_timing_multivariate")]
+        print_cumulative("replay_challenges", start.elapsed());
 
         anyhow::ensure!(
             self.shplonked_eval_points[0] == x_challenge,
@@ -399,6 +409,8 @@ impl<E: Pairing> traits::BatchedRangeProof<E> for Proof<E> {
                 .sum::<E::ScalarField>();
 
         // Now form the MSM corresponding to batching the Zeromorph openings
+        #[cfg(feature = "range_proof_timing_multivariate")]
+        let start = Instant::now();
         let mut combined_bases = vec![comm.0.into_affine()];
         let mut combined_scalars = vec![E::ScalarField::ONE];
         if let Some(ref bc) = self.blinding_poly_comm {
@@ -409,7 +421,11 @@ impl<E: Pairing> traits::BatchedRangeProof<E> for Proof<E> {
         combined_scalars.extend(hat_c_powers.iter().skip(1).copied());
         let combined_comm =
             E::G1::msm(&combined_bases, &combined_scalars).expect("combined commitment MSM");
+        #[cfg(feature = "range_proof_timing_multivariate")]
+        print_cumulative("combined_comm (MSM)", start.elapsed());
 
+        #[cfg(feature = "range_proof_timing_multivariate")]
+        let start = Instant::now();
         let point_reversed: Vec<E::ScalarField> = x.iter().rev().cloned().collect();
         let zeromorph_msm = zeta_z_com::<E>(
             self.zeromorph_q_hat_com,
@@ -422,6 +438,8 @@ impl<E: Pairing> traits::BatchedRangeProof<E> for Proof<E> {
             &point_reversed,
             batched_eval,
         );
+        #[cfg(feature = "range_proof_timing_multivariate")]
+        print_cumulative("zeta_z_com", start.elapsed());
 
         let g_commitment_msms: Vec<MsmInput<E::G1Affine, E::ScalarField>> = self
             .g_i_comms
@@ -432,11 +450,6 @@ impl<E: Pairing> traits::BatchedRangeProof<E> for Proof<E> {
             .collect();
         let commitment_msms: Vec<MsmInput<E::G1Affine, E::ScalarField>> =
             once(zeromorph_msm).chain(g_commitment_msms).collect();
-        #[cfg(feature = "range_proof_timing_multivariate")]
-        print_cumulative(
-            "transcript y_f,y_js + hat_c + replay_challenges + combined_comm + zeta_z_com",
-            start.elapsed(),
-        );
 
         // Step 5d: Build sets, y_rev, then single uPCS.BatchVerify
         #[cfg(feature = "range_proof_timing_multivariate")]

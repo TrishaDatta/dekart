@@ -57,7 +57,8 @@ Univariate **DeKART** range proof: proves that committed values lie in a prescri
 
 - **Building blocks:** Univariate hiding KZG (commitments and opening proof) and a small sigma protocol (`two_term_msm`). 
 - **Building blocks:** Contains commitments, scalar openings, the sigma proof, and a hiding KZG opening.
-- **Timing:** Optional feature `range_proof_timing_univariate_v2` prints per-phase timing (setup / prove / verify / commit).
+- **Timing:** Optional feature `range_proof_timing_univariate_v2` prints per-phase timing (setup / prove / verify / commit). Usage e.g.: `RAYON_NUM_THREADS=1 cargo bench --bench range_proof --features range_proof_timing_multivariate -- --nocapture`
+
 
 ---
 
