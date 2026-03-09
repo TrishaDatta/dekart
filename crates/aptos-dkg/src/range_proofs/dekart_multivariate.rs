@@ -36,7 +36,7 @@ use aptos_crypto::{
     },
     utils::powers,
 };
-use ark_ec::{pairing::Pairing, AffineRepr, CurveGroup, PrimeGroup, VariableBaseMSM};
+use ark_ec::{pairing::Pairing, AffineRepr, CurveGroup, PrimeGroup};
 use ark_ff::{AdditiveGroup, Field};
 use ark_poly::{
     univariate::DensePolynomial, DenseMultilinearExtension, DenseUVPolynomial, Polynomial,
@@ -408,7 +408,7 @@ impl<E: Pairing> traits::BatchedRangeProof<E> for Proof<E> {
                 .map(|(j, &y_j)| hat_c_powers[j + 1] * y_j)
                 .sum::<E::ScalarField>();
 
-        // Now form the MSM corresponding to batching the Zeromorph openings
+        // Now form the MSM input corresponding to batching the Zeromorph openings (no MSM evaluation yet).
         #[cfg(feature = "range_proof_timing_multivariate")]
         let start = Instant::now();
         let mut combined_bases = vec![comm.0.into_affine()];
@@ -420,16 +420,16 @@ impl<E: Pairing> traits::BatchedRangeProof<E> for Proof<E> {
         combined_bases.extend(self.f_j_comms.iter().copied());
         combined_scalars.extend(hat_c_powers.iter().skip(1).copied());
         let combined_comm =
-            E::G1::msm(&combined_bases, &combined_scalars).expect("combined commitment MSM");
+            MsmInput::new(combined_bases, combined_scalars).expect("combined commitment MSM input");
         #[cfg(feature = "range_proof_timing_multivariate")]
-        print_cumulative("combined_comm (MSM)", start.elapsed());
+        print_cumulative("combined_comm (MsmInput)", start.elapsed());
 
         #[cfg(feature = "range_proof_timing_multivariate")]
         let start = Instant::now();
         let point_reversed: Vec<E::ScalarField> = x.iter().rev().cloned().collect();
         let zeromorph_msm = zeta_z_com::<E>(
             self.zeromorph_q_hat_com,
-            combined_comm.into_affine(),
+            combined_comm,
             vk.vk_hkzg.group_generators.g1,
             &self.zeromorph_q_k_com,
             y_challenge,
