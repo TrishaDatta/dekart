@@ -11,7 +11,7 @@ use crate::{
         },
         traits::PolynomialCommitmentScheme as _,
         univariate_hiding_kzg,
-        zeromorph::{replay_challenges, zeta_z_com, Zeromorph, ZeromorphProverKey},
+        zeromorph::{replay_challenges, zeta_z_com, Zeromorph, ZeromorphProverKey, ZeromorphVerifierKey, ZeromorphCommitment, ZeromorphProof},
         EvaluationSet,
     },
     pvss::chunky::chunked_elgamal::correlated_randomness,
@@ -36,15 +36,16 @@ use aptos_crypto::{
     },
     utils::powers,
 };
-use ark_ec::{pairing::Pairing, AffineRepr, CurveGroup, PrimeGroup};
+use ark_ec::{pairing::Pairing, AffineRepr, CurveGroup, PrimeGroup, VariableBaseMSM};
 use ark_ff::{AdditiveGroup, Field};
 use ark_poly::{
     univariate::DensePolynomial, DenseMultilinearExtension, DenseUVPolynomial, Polynomial,
 };
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 use rand::{CryptoRng, RngCore};
+use std::time::Instant;
 #[cfg(feature = "range_proof_timing_multivariate")]
-use std::time::{Duration, Instant};
+use std::time::{Duration};
 use std::{fmt::Debug, iter::once};
 
 #[allow(non_snake_case)]
@@ -69,10 +70,10 @@ pub struct VerificationKey<E: Pairing> {
 #[allow(non_snake_case)]
 #[derive(CanonicalSerialize, Clone, CanonicalDeserialize)]
 pub struct Proof<E: Pairing> {
-    /// Blinding commitment C_β (None if blinding was not used)
-    pub blinding_poly_comm: Option<E::G1Affine>,
-    /// Proof that C_β is of the form β·eq_0 (None if blinding was not used)
-    pub blinding_poly_proof: Option<two_term_msm::Proof<E::G1>>,
+    /// Blinding commitment C_β
+    pub blinding_poly_comm: E::G1Affine,
+    /// Proof that C_β is of the form β·eq_0
+    pub blinding_poly_proof: two_term_msm::Proof<E::G1>,
     pub f_j_comms: Vec<E::G1Affine>,
     pub g_i_comms: Vec<E::G1Affine>,
     pub H_g: E::ScalarField,
@@ -217,32 +218,38 @@ impl<E: Pairing> traits::BatchedRangeProof<E> for Proof<E> {
                 comm: comm.clone(),
             },
         );
+        <merlin::Transcript as RangeProof<E, Proof<E>>>::append_blinding_poly_commitment(
+            &mut trs, &self.blinding_poly_comm,
+        );
+        <merlin::Transcript as RangeProof<E, Proof<E>>>::append_sigma_proof(
+            &mut trs, &self.blinding_poly_proof,
+        );
         #[cfg(feature = "range_proof_timing_multivariate")]
         print_cumulative("transcript init (vk + public statement)", start.elapsed());
 
         // Step 2: Verify the blinding commitment
         #[cfg(feature = "range_proof_timing_multivariate")]
         let start = Instant::now();
-        if let (Some(blinding_comm), Some(blinding_proof)) =
-            (&self.blinding_poly_comm, &self.blinding_poly_proof)
-        {
-            let hom = two_term_msm::Homomorphism {
-                base_1: vk.last_tau,
+
+        let hom = two_term_msm::Homomorphism {
+                base_1: vk.vk_hkzg.group_generators.g1,
                 base_2: vk.xi_1,
-            };
-            hom.verify(
-                &TrivialShape((*blinding_comm).into()),
-                blinding_proof,
-                &(),
-                rng,
-            )?;
-        }
+        };
+        hom.verify(
+            &TrivialShape(self.blinding_poly_comm.into()),
+            &self.blinding_poly_proof,
+            &(),
+            rng,
+        )?;
+
+
         #[cfg(feature = "range_proof_timing_multivariate")]
         print_cumulative("blinding two_term_msm verify", start.elapsed());
 
         // Step 3a–3d: Append commitments and draw challenges
         #[cfg(feature = "range_proof_timing_multivariate")]
         let start = Instant::now();
+
         <merlin::Transcript as RangeProof<E, Proof<E>>>::append_f_j_commitments(
             &mut trs,
             &self.f_j_comms,
@@ -353,6 +360,7 @@ impl<E: Pairing> traits::BatchedRangeProof<E> for Proof<E> {
             ));
         }
 
+
         // Step 4b: y_f - sum_{j=1}^ℓ 2^{j-1} y_j == 0 (correlated masks)
         let two = E::ScalarField::from(2u64);
         let mut pow2 = E::ScalarField::ONE;
@@ -411,12 +419,8 @@ impl<E: Pairing> traits::BatchedRangeProof<E> for Proof<E> {
         // Now form the MSM input corresponding to batching the Zeromorph openings (no MSM evaluation yet).
         #[cfg(feature = "range_proof_timing_multivariate")]
         let start = Instant::now();
-        let mut combined_bases = vec![comm.0.into_affine()];
-        let mut combined_scalars = vec![E::ScalarField::ONE];
-        if let Some(ref bc) = self.blinding_poly_comm {
-            combined_bases.push(*bc);
-            combined_scalars.push(E::ScalarField::ONE);
-        }
+        let mut combined_bases = vec![comm.0.into_affine(), self.blinding_poly_comm];
+        let mut combined_scalars = vec![E::ScalarField::ONE, E::ScalarField::ONE];
         combined_bases.extend(self.f_j_comms.iter().copied());
         combined_scalars.extend(hat_c_powers.iter().skip(1).copied());
         let combined_comm =
@@ -510,15 +514,12 @@ impl<E: Pairing> traits::BatchedRangeProof<E> for Proof<E> {
         rho: &Self::CommitmentRandomness,
         rng: &mut R,
     ) -> Proof<E> {
-        // Use blinding=false: with blinding, combined_comm = comm + comm_blinding_poly + ... mixes
-        // a two-term MSM (beta*tau^{n-1}+rho*xi) with KZG commitments; that sum is not a KZG
-        // commitment to batched_coeffs, so the batched opening verification fails.
         let comm_conv = TrivialShape(comm.0.into_group()); // TODO: hacky, remove etc
-        prove_impl(pk, values, ell, &comm_conv, rho, rng, false)
+        prove_impl(pk, values, ell, &comm_conv, rho, rng)
     }
 }
 
-/// Prover with optional blinding. When `use_blinding` is false, no C_β is produced.
+/// Prover
 #[allow(non_snake_case)]
 pub fn prove_impl<E: Pairing, R: RngCore + CryptoRng>(
     pk: &ProverKey<E>,
@@ -527,7 +528,6 @@ pub fn prove_impl<E: Pairing, R: RngCore + CryptoRng>(
     comm: &univariate_hiding_kzg::Commitment<E>,
     rho: &univariate_hiding_kzg::CommitmentRandomness<E::ScalarField>,
     rng: &mut R,
-    use_blinding: bool,
 ) -> Proof<E> {
     #[cfg(feature = "range_proof_timing_multivariate")]
     let mut cumulative = Duration::ZERO;
@@ -563,26 +563,24 @@ pub fn prove_impl<E: Pairing, R: RngCore + CryptoRng>(
 
     #[cfg(feature = "range_proof_timing_multivariate")]
     let start = Instant::now();
-    // Step 2 (optional)
-    let (beta, comm_blinding_poly, comm_blinding_poly_rand, beta_sigma_proof) = if use_blinding {
-        let last_msm_elt = tau_powers.last().expect("PowersOfTau SRS has no elements");
+
+    let (beta, comm_blinding_poly, comm_blinding_poly_rand, beta_sigma_proof) = {
+        let g1_generator = pk.vk.vk_hkzg.group_generators.g1;
         let (b, c, r, proof): (
             E::ScalarField,
             E::G1,
             E::ScalarField,
             two_term_msm::Proof<E::G1>,
-        ) = zksc_blind::<E, _>(*last_msm_elt, pk.ck.xi_1, rng);
-        <merlin::Transcript as RangeProof<E, Proof<E>>>::append_blinding_poly_commitment(
-            &mut trs, &c,
-        );
-        (b, Some(c), Some(r), Some(proof))
-    } else {
-        (
-            E::ScalarField::ZERO,
-            None,
-            None,
-            None::<two_term_msm::Proof<E::G1>>,
-        )
+        ) = zksc_blind::<E, _>(g1_generator, pk.ck.xi_1, rng);
+        let c_affine = c.into_affine();
+
+    <merlin::Transcript as RangeProof<E, Proof<E>>>::append_blinding_poly_commitment(
+        &mut trs, &c_affine,
+    );
+    <merlin::Transcript as RangeProof<E, Proof<E>>>::append_sigma_proof(
+        &mut trs, &proof,
+    );
+        (b, c, r, proof)
     };
     #[cfg(feature = "range_proof_timing_multivariate")]
     print_cumulative("blinding (zksc_blind + transcript)", start.elapsed());
@@ -644,6 +642,7 @@ pub fn prove_impl<E: Pairing, R: RngCore + CryptoRng>(
     #[cfg(feature = "range_proof_timing_multivariate")]
     print_cumulative("hat_f_j commitments (hom.apply loop)", start.elapsed());
 
+
     #[cfg(feature = "range_proof_timing_multivariate")]
     let start = Instant::now();
     // Step 4a:
@@ -666,6 +665,8 @@ pub fn prove_impl<E: Pairing, R: RngCore + CryptoRng>(
         E::ScalarField,
     ) = zksc_send_mask(&srs, 4, num_vars, rng);
 
+    //mytodo: make sure all appropriate things are appended to fiat-shamir transcript
+
     let n_f = f_j_comms_proj.len();
     let mut combined = f_j_comms_proj;
     combined.extend(&g_i_commitments_proj);
@@ -683,17 +684,7 @@ pub fn prove_impl<E: Pairing, R: RngCore + CryptoRng>(
     <merlin::Transcript as RangeProof<E, Proof<E>>>::append_g_i_commitments(&mut trs, &g_i_comms);
     <merlin::Transcript as RangeProof<E, Proof<E>>>::append_hypercube_sum(&mut trs, &H_g);
     #[cfg(feature = "range_proof_timing_multivariate")]
-    print_cumulative("transcript append g_comm + H_g", start.elapsed());
-
-    #[cfg(feature = "range_proof_timing_multivariate")]
-    let start = Instant::now();
-    // Step 5a–5c: Verifier challenges c, alpha; eq_point t; run sumcheck on transcript with linear term (f - sum 2^{j-1} f_j) + sum c^j f_j(f_j-1)
-    let c: E::ScalarField =
-        <merlin::Transcript as RangeProof<E, Proof<E>>>::challenge_scalar(&mut trs);
-    let alpha: E::ScalarField =
-        <merlin::Transcript as RangeProof<E, Proof<E>>>::challenge_nonzero_scalar(&mut trs);
-    #[cfg(feature = "range_proof_timing_multivariate")]
-    print_cumulative("transcript challenges (c, alpha)", start.elapsed());
+    print_cumulative("transcript append comm_blinding_poly + f_j_comms + g_comm + H_g", start.elapsed());
 
     #[cfg(feature = "range_proof_timing_multivariate")]
     let start = Instant::now();
@@ -705,7 +696,19 @@ pub fn prove_impl<E: Pairing, R: RngCore + CryptoRng>(
     #[cfg(feature = "range_proof_timing_multivariate")]
     print_cumulative("f_evals construction", start.elapsed());
 
+    #[cfg(feature = "range_proof_timing_multivariate")]
+    let start = Instant::now();
+    // mytodo: change this to c_1,...,c_m instead of c^i
+    // Step 5a–5c: Verifier challenges c, alpha; eq_point t; run sumcheck on transcript with linear term (f - sum 2^{j-1} f_j) + sum c^j f_j(f_j-1)
+    let c: E::ScalarField =
+        <merlin::Transcript as RangeProof<E, Proof<E>>>::challenge_scalar(&mut trs);
+    let alpha: E::ScalarField =
+        <merlin::Transcript as RangeProof<E, Proof<E>>>::challenge_nonzero_scalar(&mut trs);
+    #[cfg(feature = "range_proof_timing_multivariate")]
+    print_cumulative("transcript challenges (c, alpha)", start.elapsed());
+
     // TODO: define hat(f) hier ipv in zkzc_send_polys()
+    // mytodo: check sum-check implementation (including fiat-shamir implementation)
     #[cfg(feature = "range_proof_timing_multivariate")]
     let start = Instant::now();
     let sumcheck_proof = zkzc_send_polys::<E>(
@@ -756,7 +759,7 @@ pub fn prove_impl<E: Pairing, R: RngCore + CryptoRng>(
     #[cfg(feature = "range_proof_timing_multivariate")]
     let start = Instant::now();
     // Step 6e:
-    // Batched polynomial f̂ = f + sum_j hat_c^j f_j (coefficient form for univariate opening)
+    // Batched polynomial f̂ = f + blinding_poly + sum_j hat_c^j f_j (coefficient form for univariate opening)
     let hat_c_powers = powers(hat_c, ell as usize + 1);
     let mut batched_evals = f_evals.clone();
     for j in 0..ell as usize {
@@ -766,31 +769,7 @@ pub fn prove_impl<E: Pairing, R: RngCore + CryptoRng>(
         }
     }
 
-    // let z: E::ScalarField = trs.challenge_scalar();
-    // let y: E::ScalarField = batched_evals
-    //     .iter()
-    //     .enumerate()
-    //     .fold(E::ScalarField::ZERO, |acc, (i, &coeff)| {
-    //         acc + coeff * z.pow([i as u64])
-    //     });
-
-    // TODO: not used??????????
-    // Verifier will recompute this for the single batched zk_pcs_verify
-    // let _combined_comm = {
-    //     let mut bases = vec![comm.0.into_affine()];
-    //     let mut scalars = vec![E::ScalarField::ONE];
-    //     if let Some(ref cp) = comm_blinding_poly {
-    //         bases.push((*cp).into_affine());
-    //         scalars.push(E::ScalarField::ONE);
-    //     }
-    //     for (j, &cf) in hat_f_j_comms.iter().enumerate() {
-    //         bases.push(cf.into_affine());
-    //         scalars.push(hat_c_powers[j + 1]);
-    //     }
-    //     E::G1::msm(&bases, &scalars).expect("batched commitment MSM")
-    // };
-
-    let mut batched_randomness = rho.0 + comm_blinding_poly_rand.unwrap_or(E::ScalarField::ZERO);
+    let mut batched_randomness = rho.0 + comm_blinding_poly_rand;
     for (j, &r_j) in f_j_comms_randomness.iter().enumerate() {
         batched_randomness += hat_c_powers[j + 1] * r_j;
     }
@@ -805,6 +784,7 @@ pub fn prove_impl<E: Pairing, R: RngCore + CryptoRng>(
             .enumerate()
             .map(|(j, &y_j)| hat_c_powers[j + 1] * y_j)
             .sum::<E::ScalarField>();
+
     let zeromorph_pp = ZeromorphProverKey::<E> {
         hiding_kzg_pp: pk.ck.clone(),
         open_offset: 0,
@@ -814,7 +794,6 @@ pub fn prove_impl<E: Pairing, R: RngCore + CryptoRng>(
         "batched_evals + batched_poly + batched_randomness + zeromorph_pp",
         start.elapsed(),
     );
-    #[cfg(feature = "range_proof_timing_multivariate")]
     let start = Instant::now();
     let (batched_instance, q_hat_com, q_k_com) = Zeromorph::open_to_batched_instance(
         &zeromorph_pp,
@@ -825,6 +804,7 @@ pub fn prove_impl<E: Pairing, R: RngCore + CryptoRng>(
         rng,
         &mut trs,
     );
+
     #[cfg(feature = "range_proof_timing_multivariate")]
     print_cumulative("Zeromorph open_to_batched_instance", start.elapsed());
 
@@ -892,7 +872,7 @@ pub fn prove_impl<E: Pairing, R: RngCore + CryptoRng>(
     print_cumulative("batched opening", start.elapsed());
 
     Proof {
-        blinding_poly_comm: comm_blinding_poly.map(|c| c.into_affine()),
+        blinding_poly_comm: comm_blinding_poly.into_affine(),
         blinding_poly_proof: beta_sigma_proof,
         sumcheck_proof: sumcheck_proof.0,
         f_j_comms,
@@ -968,130 +948,6 @@ fn zkzc_send_polys<E: Pairing>(
     let challenges: Vec<E::ScalarField> = r_sumcheck;
     (proof, challenges)
 }
-
-// #[allow(non_snake_case)]
-// fn prove<R: RngCore + CryptoRng>(
-//     pk: &ProverKey<E>,
-//     values: &[Self::Input],
-//     ell: usize,
-//     comm: &Self::Commitment,
-//     rho: &Self::CommitmentRandomness,
-//     rng: &mut R,
-// ) -> Proof<E>
-// {
-//     // Step 1(a): Sample beta
-//     let beta = sample_field_element(rng);
-
-//     // Step 1(b): Commit to `beta \cdot eq_(1,..., 1)`, and prove knowledge of `beta`
-//     let hom = two_term_msm::Homomorphism {
-//             base_1: pk.lagr_g1.last().unwrap(),
-//             base_2: pk.xi_1,
-//         };
-//     let rho = sample_field_element(rng);
-//     let witness = two_term_msm::Witness {
-//                 poly_randomness: Scalar(beta),
-//                 hiding_kzg_randomness: Scalar(rho),
-//             };
-//     let blinding_poly_comm = hom.apply(&witness);
-//     let sigma_proof = hom.prove(&witness, &blinding_poly_comm, &(), rng);
-
-//     // // Step 1(b): commit to beta \cdot eq_(1,..., 1)
-//     // let num_vars = (values.len() + 1).next_power_of_two().ilog2() as usize;
-//     // let size = 1 << num_vars;
-//     // let mut blinding_poly_values = vec![E::ScalarField::ZERO; size];
-//     // blinding_poly_values[size - 1] = beta;
-//     // let blinding_poly = DenseMultilinearExtension::from_evaluations_vec(num_vars, blinding_poly_values);
-//     // let blinding_poly_comm = Zeromorph::commit(ck, &blinding_poly, rng);
-
-//     // Step 3: Produce correlated randomness
-//     let betas = correlated_randomness(rng, 2, ell.try_into().unwrap(), beta);
-
-//     // Step 4: construct the hat_f_js
-//     // This is copy-paste:
-//     let bits: Vec<Vec<bool>> = values
-//         .iter()
-//         .map(|z_val| {
-//             utils::scalar_to_bits_le::<E>(z_val)
-//                 .into_iter()
-//                 .take(ell)
-//                 .collect::<Vec<_>>()
-//         })
-//         .collect();
-//     // This is copy-paste:
-//     let hat_f_j_evals_without_r: Vec<Vec<bool>> = (0..ell)
-//         .map(|j| bits.iter().map(|row| row[j]).collect())
-//         .collect(); // This is just transposing the bits matrix
-//     let hat_f_j_evals: Vec<Vec<E::ScalarField>> = hat_f_j_evals_without_r
-//         .iter()
-//         .enumerate()
-//         .map(|(j, col)| {
-//             once(betas[j])
-//                 .chain(col.iter().map(|&b| E::ScalarField::from(b)))
-//                 .collect()
-//         })
-//         .collect();
-
-//     let num_vars = (values.len() + 1).next_power_of_two().ilog2() as usize;
-//     let hat_f_js: Vec<DenseMultilinearExtension::<E::ScalarField>> = hat_f_j_evals
-//         .iter()
-//         .map(|hat_f_j_eval| DenseMultilinearExtension::from_evaluations_vec(num_vars, hat_f_j_eval.clone()))
-//         .collect();
-
-//     // Step 5: Commit to the hat_f_j
-//     let hat_f_j_comms: Vec<_> = hat_f_js
-//         .iter()
-//         .map(|hat_f_j| Zeromorph::commit(ck, hat_f_j, rng))
-//         .collect();
-
-//     // Step 6
-//     let gammas = sample_field_elements(ell, rng);
-//     // TODO: replace this with Fiat-Shamir?
-
-//     // // Step 2(a):
-//     // let poly = SparsePolynomial::from_coefficients_vec(
-//     //     num_vars,
-//     //     vec![
-//     //         (sample_field_element(rng), SparseTerm::new(vec![])),
-//     //         (sample_field_element(rng), SparseTerm::new(vec![(i, 1)])),
-//     //         (sample_field_element(rng), SparseTerm::new(vec![(i, 2)])),
-//     //     ],
-//     // );
-
-//     let g_is: Vec<_> = (0..num_vars)
-//         .map(|i| {
-//             SparsePolynomial::from_coefficients_vec(
-//                 num_vars,
-//                 vec![
-//                     (sample_field_element(rng), SparseTerm::new(vec![])),
-//                     (sample_field_element(rng), SparseTerm::new(vec![(i, 1)])),
-//                     (sample_field_element(rng), SparseTerm::new(vec![(i, 2)])),
-//                 ],
-//             )
-//         })
-//         .collect();
-
-//     // Step 2(b):
-//     let g = g_is.iter().cloned().sum();
-
-//     // // Step 2(c):
-//     // let g_comm = Zeromorph::commit(ck, &g, rng);
-
-//     // let mut G = E::ScalarField::ZERO;
-//     // for i in 0..(1 << num_vars) {
-//     //     // build the Boolean vector corresponding to i
-//     //     let point: Vec<E::ScalarField> = (0..num_vars)
-//     //         .map(|j| if (i >> j) & 1 == 1 {
-//     //             E::ScalarField::ONE
-//     //         } else {
-//     //             E::ScalarField::ZERO
-//     //         })
-//     //         .collect();
-
-//     //     G += g.evaluate(&point);
-//     // }
-
-// }
-//
 
 fn zksc_blind<E: Pairing, R: RngCore + CryptoRng>(
     last_msm_elt: E::G1Affine,
@@ -1169,166 +1025,39 @@ fn zksc_send_mask<E: Pairing, R: RngCore + CryptoRng>(
     (g_is, g_comm, r_is, total_sum)
 }
 
-// /// Samples a specific kind of random polynomial `g`, then evaluates it at all points in {0,1}^num_vars and returns the polynomial, this sum and a commitment
-// fn send_mask<E: Pairing, R: RngCore + CryptoRng>(ck: ZeromorphProverKey<E>, d: u8, num_vars: u8, rng: &mut R) -> (SparsePolynomial<E::ScalarField, SparseTerm>, E::G1, E::ScalarField) {
-
-//     // Step (a): Sample the g_i
-//     let g_is: Vec<_> = (0..num_vars)
-//         .map(|i| {
-//             SparsePolynomial::from_coefficients_vec(
-//                 num_vars.into(),
-//                 (0..=d)
-//                     .map(|k| {
-//                         let term = if k == 0 {
-//                             // constant term
-//                             SparseTerm::new(vec![])
-//                         } else {
-//                             SparseTerm::new(vec![(i.into(), k as usize)])
-//                         };
-
-//                         (sample_field_element(rng), term)
-//                     })
-//                     .collect())
-//             })
-//         .collect();
-
-//     // Step (b): Sum them into one polynomial
-//     let g = g_is.iter().cloned().sum();
-
-//     // Step (c): Commit and compute the sum
-//     let g_comm = univariate_hiding_kzg::commit(&ck, g, rng);
-
-//     let mut sum = E::ScalarField::ZERO;
-
-//     for i in 0..(1 << num_vars) {
-//         // build the Boolean vector corresponding to i
-//         let point: Vec<E::ScalarField> = (0..num_vars)
-//             .map(|j| if (i >> j) & 1 == 1 { E::ScalarField::ONE } else { E::ScalarField::ZERO })
-//             .collect();
-
-//         sum += g.evaluate(&point);
-//     }
-
-//     (g, sum, comm)
-// }
-
-// pub mod blinding_check {
-//     // TODO: maybe fixed_base_msms should become a folder and put its code inside mod.rs? Then put this mod inside of that folder?
-//     use super::*;
-//     use crate::sigma_protocol::{homomorphism::fixed_base_msms, traits::FirstProofItem};
-//     use aptos_crypto::arkworks::{msm::IsMsmInput, random::UniformRand};
-//     use aptos_crypto_derive::SigmaProtocolWitness;
-//     use ark_ec::AffineRepr;
-//     pub use sigma_protocol::homomorphism::TrivialShape as CodomainShape;
-//     pub type Proof<C> = sigma_protocol::Proof<
-//         <<C as CurveGroup>::Affine as AffineRepr>::ScalarField,
-//         Homomorphism<C>,
-//     >;
-
-//     /// Represents a homomorphism with two base points over an elliptic curve group.
-//     ///
-//     /// This structure defines a map from two scalars to one group element:
-//     /// `f(x1, x2) = base_1 * x1 + base_2 * x2`.
-//     #[derive(CanonicalSerialize, Clone, Debug, PartialEq, Eq)]
-//     pub struct Homomorphism<C: CurveGroup> {
-//         pub base_1: C::Affine,
-//         pub base_2: C::Affine,
-//     }
-
-//     #[derive(
-//         SigmaProtocolWitness, CanonicalSerialize, CanonicalDeserialize, Clone, Debug, PartialEq, Eq,
-//     )]
-//     pub struct Witness<F: PrimeField> {
-//         pub poly_randomness: Scalar<F>,
-//         pub hiding_kzg_randomness: Scalar<F>,
-//     }
-
-//     impl<C: CurveGroup> homomorphism::Trait for Homomorphism<C> {
-//         type Codomain = CodomainShape<C>;
-//         type Domain = Witness<C::ScalarField>;
-
-//         fn apply(&self, input: &Self::Domain) -> Self::Codomain {
-//             // Not doing `self.apply_msm(self.msm_terms(input))` because E::G1::msm is slower!
-//             // `msm_terms()` is still useful for verification though: there the code will use it to produce an MSM
-//             //  of size 2+2 (the latter two are for the first prover message A and the statement P)
-//             CodomainShape(
-//                 self.base_1 * input.poly_randomness.0 + self.base_2 * input.hiding_kzg_randomness.0,
-//             )
-//         }
-//     }
-
-//     impl<C: CurveGroup> fixed_base_msms::Trait for Homomorphism<C> {
-//         type Base = C::Affine;
-//         type CodomainShape<T>
-//             = CodomainShape<T>
-//         where
-//             T: CanonicalSerialize + CanonicalDeserialize + Clone + Eq + Debug;
-//         type MsmInput = MsmInput<C::Affine, C::ScalarField>;
-//         type MsmOutput = C;
-//         type Scalar = C::ScalarField;
-
-//         fn msm_terms(&self, input: &Self::Domain) -> Self::CodomainShape<Self::MsmInput> {
-//             let mut scalars = Vec::with_capacity(2);
-//             scalars.push(input.poly_randomness.0);
-//             scalars.push(input.hiding_kzg_randomness.0);
-
-//             let mut bases = Vec::with_capacity(2);
-//             bases.push(self.base_1);
-//             bases.push(self.base_2);
-
-//             CodomainShape(MsmInput { bases, scalars })
-//         }
-
-//         fn msm_eval(input: Self::MsmInput) -> Self::MsmOutput {
-//             C::msm(input.bases(), input.scalars()).expect("MSM failed in TwoTermMSM")
-//         }
-
-//         fn batch_normalize(msm_output: Vec<Self::MsmOutput>) -> Vec<Self::Base> {
-//             C::normalize_batch(&msm_output)
-//         }
-//     }
-
-//     impl<C: CurveGroup> sigma_protocol::Trait<C> for Homomorphism<C> {
-//         fn dst(&self) -> Vec<u8> {
-//             b"DEKART_V2_SIGMA_PROTOCOL".to_vec()
-//         }
-//     }
-// }
-
-// mod ml_sumcheck {
-//     /// Prover Message
-//     #[derive(Clone, CanonicalSerialize)]
-//     pub struct ProverMsg<F: Field> {
-//         /// evaluations on P(0), P(1), P(2), ...
-//         pub(crate) evaluations: Vec<F>,
-//     }
-
-//     /// Prover State for binary constraints with eq_t masking and g polynomial
-//     pub struct ProverState<F: Field> {
-//         /// sampled randomness given by the verifier
-//         pub randomness: Vec<F>,
-//         /// List of (coefficient, polynomial) pairs
-//         pub constraints: Vec<(F, DenseMultilinearExtension<F>)>,
-//         /// The eq_t point (original, never modified)
-//         pub eq_point_original: Vec<F>,
-//         /// Coefficient α for g term
-//         pub alpha: F,
-//         /// Random univariate polynomials g₁, ..., gₙ (coefficients)
-//         pub g_polys: Vec<Vec<F>>,
-//         /// Number of variables
-//         pub num_vars: usize,
-//         /// The current round number
-//         pub round: usize,
-//     }
-
-// }
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use aptos_crypto::arkworks::GroupGenerators;
     use ark_bn254::Bn254;
+    use ark_ff::{UniformRand, PrimeField};  // Add PrimeField
     use rand::thread_rng;
+
+    /// Helper function to generate random field elements in a specified range [0, max_value)
+    fn generate_random_values_in_range<R: RngCore + CryptoRng>(
+        n: usize,
+        max_value: u64,
+        rng: &mut R,
+    ) -> Vec<ark_bn254::Fr> {
+        (0..n)
+            .map(|_| {
+                // Use sample_field_element and then modulo to get into range
+                let random_val = sample_field_element::<ark_bn254::Fr, _>(rng);
+                let val_u64 = random_val.into_bigint().0[0] % max_value;
+                ark_bn254::Fr::from(val_u64)
+            })
+            .collect()
+    }
+
+    /// Helper function to generate completely random field elements (no range constraint)
+    fn generate_random_field_elements<R: RngCore + CryptoRng>(
+        n: usize,
+        rng: &mut R,
+    ) -> Vec<ark_bn254::Fr> {
+        (0..n)
+            .map(|_| sample_field_element::<ark_bn254::Fr, _>(rng))
+            .collect()
+    }
 
     #[test]
     fn test_prove_verify_simple() {
@@ -1383,4 +1112,266 @@ mod tests {
         traits::BatchedRangeProof::<E>::verify(&proof, &vk, n, max_ell, &comm, &mut rng)
             .expect("verification should succeed");
     }
+
+    #[test]
+    fn test_prove_verify_random_values_in_range() {
+        type E = Bn254;
+        let mut rng = thread_rng();
+        let group_generators = GroupGenerators::default();
+
+        // Parameters
+        let n = 7; // Number of values
+        let max_value = 1000u64; // Values will be in [0, 1000)
+        let max_ell = 16u8; // Bit length
+
+        // Setup with sufficient capacity
+        let max_n = n;
+        let (pk, vk) = <Proof<E> as traits::BatchedRangeProof<E>>::setup(
+            max_n,
+            max_ell,
+            group_generators,
+            &mut rng,
+        );
+
+        // Generate random values in range
+        let values = generate_random_values_in_range(n, max_value, &mut rng);
+        println!("Testing with {} random values in range [0, {})", n, max_value);
+        println!("Values: {:?}", values.iter().map(|v| {
+            v.into_bigint().0[0]
+        }).collect::<Vec<_>>());
+
+        let ck = <Proof<E> as traits::BatchedRangeProof<E>>::commitment_key_from_prover_key(&pk);
+        let (comm, r) = <Proof<E> as traits::BatchedRangeProof<E>>::commit(&ck, &values, &mut rng);
+
+        let proof = <Proof<E> as traits::BatchedRangeProof<E>>::prove(
+            &pk,
+            &values,
+            max_ell,
+            &comm.clone().into(),
+            &r,
+            &mut rng,
+        );
+
+        traits::BatchedRangeProof::<E>::verify(&proof, &vk, n, max_ell, &comm, &mut rng)
+            .expect("verification should succeed for random values in range");
+    }
+
+    #[test]
+    fn test_prove_verify_parameterized() {
+        type E = Bn254;
+        let mut rng = thread_rng();
+        let group_generators = GroupGenerators::default();
+
+        // Test with different parameters
+        let test_cases: Vec<(usize, u64, u8)> = vec![
+            (3, 256u64, 8u8),      // 3 values, range [0, 256), 8 bits
+            (7, 1024u64, 16u8),    // 7 values, range [0, 1024), 16 bits
+            (1000, 65536u64, 16u8),  // 15 values, range [0, 65536), 16 bits
+            (1, 100u64, 8u8),      // Edge case: single value
+        ];
+
+        for (n, max_value, max_ell) in test_cases {
+            println!("\n=== Testing: n={}, max_value={}, max_ell={} ===", n, max_value, max_ell);
+
+            // Calculate required SRS size: need to support both value commitment and masking polys
+            let size: usize = (n + 1).next_power_of_two();
+            let num_vars = size.ilog2() as usize;
+            // Each g_i has degree 4, and we have num_vars of them
+            let max_n = n.max(num_vars * 5);  // Ensure we have enough for masking polynomials
+
+            let (pk, vk) = <Proof<E> as traits::BatchedRangeProof<E>>::setup(
+                max_n,
+                max_ell,
+                group_generators.clone(),
+                &mut rng,
+            );
+
+            let values = generate_random_values_in_range(n, max_value, &mut rng);
+
+            let ck = <Proof<E> as traits::BatchedRangeProof<E>>::commitment_key_from_prover_key(&pk);
+            let (comm, r) = <Proof<E> as traits::BatchedRangeProof<E>>::commit(&ck, &values, &mut rng);
+
+            let proof = <Proof<E> as traits::BatchedRangeProof<E>>::prove(
+                &pk,
+                &values,
+                max_ell,
+                &comm.clone().into(),
+                &r,
+                &mut rng,
+            );
+
+            // Verify proof structure
+            let expected_num_vars = (n + 1).next_power_of_two().ilog2() as usize;
+            assert_eq!(
+                proof.sumcheck_proof.compressed_polys.len(),
+                expected_num_vars,
+                "sumcheck rounds = num_vars for n={}",
+                n
+            );
+            assert_eq!(proof.f_j_comms.len(), max_ell as usize);
+            assert_eq!(proof.y_js.len(), max_ell as usize);
+
+            traits::BatchedRangeProof::<E>::verify(&proof, &vk, n, max_ell, &comm, &mut rng)
+                .expect(&format!("verification should succeed for n={}, max_value={}, max_ell={}",
+                    n, max_value, max_ell));
+
+            println!("✓ Test passed");
+        }
+    }
+
+    /// Customizable test function that can be called with specific parameters
+    fn run_custom_test(n: usize, max_value: u64, max_ell: u8) {
+        type E = Bn254;
+        let mut rng = thread_rng();
+        let group_generators = GroupGenerators::default();
+
+        println!("\n=== Custom test: n={}, range=[0, {}), ell={} ===", n, max_value, max_ell);
+
+        let size: usize = (n + 1).next_power_of_two();  // Add type annotation
+        let num_vars = size.ilog2() as usize;
+        let max_n = n.max(num_vars * 5);
+
+        let (pk, vk) = <Proof<E> as traits::BatchedRangeProof<E>>::setup(
+            max_n,
+            max_ell,
+            group_generators,
+            &mut rng,
+        );
+
+        let values = generate_random_values_in_range(n, max_value, &mut rng);
+        println!("Generated values: {:?}",
+            values.iter().map(|v| v.into_bigint().0[0]).collect::<Vec<_>>()
+        );
+
+        let ck = <Proof<E> as traits::BatchedRangeProof<E>>::commitment_key_from_prover_key(&pk);
+        let (comm, r) = <Proof<E> as traits::BatchedRangeProof<E>>::commit(&ck, &values, &mut rng);
+
+        let proof = <Proof<E> as traits::BatchedRangeProof<E>>::prove(
+            &pk,
+            &values,
+            max_ell,
+            &comm.clone().into(),
+            &r,
+            &mut rng,
+        );
+
+        // Verify proof structure
+        let expected_num_vars: usize = (n + 1).next_power_of_two().ilog2() as usize;  // Add type annotation here too
+        assert_eq!(
+            proof.sumcheck_proof.compressed_polys.len(),
+            expected_num_vars,
+            "sumcheck rounds = num_vars"
+        );
+        assert_eq!(proof.f_j_comms.len(), max_ell as usize);
+        assert_eq!(proof.y_js.len(), max_ell as usize);
+
+        traits::BatchedRangeProof::<E>::verify(&proof, &vk, n, max_ell, &comm, &mut rng)
+            .expect("custom test verification should succeed");
+
+        println!("✓ Custom test passed");
+    }
+
+    #[test]
+    fn test_prove_verify_edge_cases() {
+        type E = Bn254;
+        let mut rng = thread_rng();
+        let group_generators = GroupGenerators::default();
+
+        // Test with all zeros
+        {
+            println!("\n=== Testing: all zeros ===");
+            let n = 4;
+            let max_ell = 8u8;
+            let (pk, vk) = <Proof<E> as traits::BatchedRangeProof<E>>::setup(
+                n,
+                max_ell,
+                group_generators.clone(),
+                &mut rng,
+            );
+
+            let values = vec![ark_bn254::Fr::from(0u64); n];
+            let ck = <Proof<E> as traits::BatchedRangeProof<E>>::commitment_key_from_prover_key(&pk);
+            let (comm, r) = <Proof<E> as traits::BatchedRangeProof<E>>::commit(&ck, &values, &mut rng);
+
+            let proof = <Proof<E> as traits::BatchedRangeProof<E>>::prove(
+                &pk,
+                &values,
+                max_ell,
+                &comm.clone().into(),
+                &r,
+                &mut rng,
+            );
+
+            traits::BatchedRangeProof::<E>::verify(&proof, &vk, n, max_ell, &comm, &mut rng)
+                .expect("verification should succeed for all zeros");
+            println!("✓ All zeros test passed");
+        }
+
+        // Test with maximum values for bit length
+        {
+            println!("\n=== Testing: maximum values ===");
+            let n = 4;
+            let max_ell = 8u8;
+            let (pk, vk) = <Proof<E> as traits::BatchedRangeProof<E>>::setup(
+                n,
+                max_ell,
+                group_generators.clone(),
+                &mut rng,
+            );
+
+            let max_val = (1u64 << max_ell) - 1; // 2^ell - 1
+            let values = vec![ark_bn254::Fr::from(max_val); n];
+
+            let ck = <Proof<E> as traits::BatchedRangeProof<E>>::commitment_key_from_prover_key(&pk);
+            let (comm, r) = <Proof<E> as traits::BatchedRangeProof<E>>::commit(&ck, &values, &mut rng);
+
+            let proof = <Proof<E> as traits::BatchedRangeProof<E>>::prove(
+                &pk,
+                &values,
+                max_ell,
+                &comm.clone().into(),
+                &r,
+                &mut rng,
+            );
+
+            traits::BatchedRangeProof::<E>::verify(&proof, &vk, n, max_ell, &comm, &mut rng)
+                .expect("verification should succeed for maximum values");
+            println!("✓ Maximum values test passed");
+        }
+
+        // Test with powers of two
+        {
+            println!("\n=== Testing: powers of two ===");
+            let n = 5;
+            let max_ell = 16u8;
+            let (pk, vk) = <Proof<E> as traits::BatchedRangeProof<E>>::setup(
+                n,
+                max_ell,
+                group_generators.clone(),
+                &mut rng,
+            );
+
+            let values: Vec<ark_bn254::Fr> = (0..n)
+                .map(|i| ark_bn254::Fr::from(1u64 << i))
+                .collect();
+
+            let ck = <Proof<E> as traits::BatchedRangeProof<E>>::commitment_key_from_prover_key(&pk);
+            let (comm, r) = <Proof<E> as traits::BatchedRangeProof<E>>::commit(&ck, &values, &mut rng);
+
+            let proof = <Proof<E> as traits::BatchedRangeProof<E>>::prove(
+                &pk,
+                &values,
+                max_ell,
+                &comm.clone().into(),
+                &r,
+                &mut rng,
+            );
+
+            traits::BatchedRangeProof::<E>::verify(&proof, &vk, n, max_ell, &comm, &mut rng)
+                .expect("verification should succeed for powers of two");
+            println!("✓ Powers of two test passed");
+        }
+    }
+
+
 }

@@ -832,7 +832,7 @@ pub fn batch_pairing_for_verify_generalized<
     // Spec Step 4: deferred G₁ MSM from π_PoK; Step 5a: C_f = ∑_i c^{i-1} Z_{S\S_i}(x)·C_i − Z_S(x)·π_1 − C_eval + c^n·C_PoK.
     let C_PoK =
         E::G1::msm(hom1_merged.bases(), hom1_merged.scalars()).expect("batch verify: C_PoK MSM");
-    let c_n = (0..n).fold(E::ScalarField::ONE, |acc, _| acc * c);
+    let c_n: E::ScalarField = sample_field_element(rng);
     let merged_minus_pi1_pt = E::G1::msm(merged_minus_pi1.bases(), merged_minus_pi1.scalars())
         .expect("batch verify: commitment to f MSM");
     let C_f = merged_minus_pi1_pt - c_eval.into_group() + C_PoK * c_n;

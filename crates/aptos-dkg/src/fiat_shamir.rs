@@ -92,7 +92,6 @@ pub trait RangeProof<E: Pairing, B: BatchedRangeProof<E>> {
 
     fn append_sigma_proof<A: CanonicalSerialize>(&mut self, sigma_proof: &A);
 
-    #[allow(dead_code)] // To be used in next PR
     fn append_blinding_poly_commitment<A: CanonicalSerialize>(&mut self, commitment: &A);
 
     fn append_f_j_commitments<A: CanonicalSerialize>(&mut self, f_j_commitments: &A);
