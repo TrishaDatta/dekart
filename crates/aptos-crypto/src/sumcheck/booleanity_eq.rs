@@ -1,4 +1,7 @@
 // Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
+
+// Copyright (c) Aptos Foundation
 // Licensed pursuant to the Innovation-Enabling Source Code License.
 //
 //! Sumcheck for the polynomial
@@ -63,7 +66,7 @@ impl<F: SumcheckField> BooleanityEqSumcheckProver<F> {
     /// Build prover from m MLEs (each 2^n evals), scalar c, and **t** as a vector of n field
     /// elements (arbitrary indices). eq_t(x) = ∏_i (x_i·t_i + (1−x_i)(1−t_i)) for x on the
     /// hypercube (variable order: first round = MSB).
-    pub fn new(num_vars: usize, mle_evals: Vec<Vec<F>>, c: F, t: Vec<F>) -> Self {
+    pub fn new(num_vars: usize, mle_evals: Vec<Vec<F>>, c_powers: Vec<F>, t: Vec<F>) -> Self {
         let n = 1 << num_vars;
         assert_eq!(t.len(), num_vars, "t must have length num_vars");
         assert!(!mle_evals.is_empty());
@@ -76,13 +79,6 @@ impl<F: SumcheckField> BooleanityEqSumcheckProver<F> {
             .map(|evals| DensePolynomial::new(evals.clone()))
             .collect();
         let m = polys.len();
-
-        let mut c_powers = Vec::with_capacity(m);
-        let mut c_j = c;
-        for _ in 0..m {
-            c_powers.push(c_j);
-            c_j *= c;
-        }
 
         // eq_t(g) = ∏_i (g_i ? t[i] : (1−t[i])) with g_i = MSB-first bit of g
         let eq_t_evals: Vec<F> = (0..n)
@@ -137,7 +133,7 @@ impl<F: SumcheckField> BooleanityEqSumcheckProver<F> {
     pub fn new_with_hypercube_point(
         num_vars: usize,
         mle_evals: Vec<Vec<F>>,
-        c: F,
+        c_s: Vec<F>,
         t_index: usize,
     ) -> Self {
         let n = 1 << num_vars;
@@ -151,7 +147,7 @@ impl<F: SumcheckField> BooleanityEqSumcheckProver<F> {
                 }
             })
             .collect();
-        Self::new(num_vars, mle_evals, c, t)
+        Self::new(num_vars, mle_evals, c_s, t)
     }
 
     /// Round polynomial evaluations: for x_cur in {0,1,2,3,4}, sum over the rest of the hypercube.
@@ -243,26 +239,20 @@ pub struct BooleanityEqSumcheckVerifier<F: SumcheckField> {
     params: BooleanityEqParams<F>,
     polys_evals: Option<Vec<Vec<F>>>,
     #[allow(dead_code)]
-    c: F,
     c_powers: Option<Vec<F>>,
     t: Vec<F>,
 }
 
 impl<F: SumcheckField> BooleanityEqSumcheckVerifier<F> {
     /// **t** is a vector of n field elements (arbitrary indices), same as the prover.
-    pub fn new(num_rounds: usize, mle_evals: Vec<Vec<F>>, c: F, t: Vec<F>) -> Self {
+    pub fn new(num_rounds: usize, mle_evals: Vec<Vec<F>>, c_powers: Vec<F>, t: Vec<F>) -> Self {
         let n = 1 << num_rounds;
         assert_eq!(t.len(), num_rounds, "t must have length num_rounds");
         for evals in &mle_evals {
             assert_eq!(evals.len(), n);
         }
         let m = mle_evals.len();
-        let mut c_powers = Vec::with_capacity(m);
-        let mut c_j = c;
-        for _ in 0..m {
-            c_powers.push(c_j);
-            c_j *= c;
-        }
+
         let polys: Vec<DensePolynomial<F>> = mle_evals
             .iter()
             .map(|evals| DensePolynomial::new(evals.clone()))
@@ -302,7 +292,6 @@ impl<F: SumcheckField> BooleanityEqSumcheckVerifier<F> {
                 _marker: PhantomData,
             },
             polys_evals: Some(mle_evals),
-            c,
             c_powers: Some(c_powers),
             t,
         }
@@ -312,7 +301,7 @@ impl<F: SumcheckField> BooleanityEqSumcheckVerifier<F> {
     pub fn new_with_hypercube_point(
         num_rounds: usize,
         mle_evals: Vec<Vec<F>>,
-        c: F,
+        c_s: Vec<F>,
         t_index: usize,
     ) -> Self {
         let n = 1 << num_rounds;
@@ -326,7 +315,7 @@ impl<F: SumcheckField> BooleanityEqSumcheckVerifier<F> {
                 }
             })
             .collect();
-        Self::new(num_rounds, mle_evals, c, t)
+        Self::new(num_rounds, mle_evals, c_s, t)
     }
 
     /// eq(r, t) = ∏_i (r_i·t_i + (1−r_i)(1−t_i)) for arbitrary t.
@@ -414,7 +403,7 @@ mod tests {
         let num_vars = 4;
         let n = 1 << num_vars;
         let m = 8usize;
-        let c = Fr::rand(&mut rng);
+        let c_s: Vec<Fr> = (0..m).map(|_| Fr::rand(&mut rng)).collect();
         let t: Vec<Fr> = (0..num_vars).map(|_| Fr::rand(&mut rng)).collect();
 
         let mle_evals: Vec<Vec<Fr>> = (0..m)
@@ -422,8 +411,8 @@ mod tests {
             .collect();
 
         let mut prover =
-            BooleanityEqSumcheckProver::<Fr>::new(num_vars, mle_evals.clone(), c, t.clone());
-        let verifier = BooleanityEqSumcheckVerifier::<Fr>::new(num_vars, mle_evals.clone(), c, t);
+            BooleanityEqSumcheckProver::<Fr>::new(num_vars, mle_evals.clone(), c_s.clone(), t.clone());
+        let verifier = BooleanityEqSumcheckVerifier::<Fr>::new(num_vars, mle_evals.clone(), c_s, t);
 
         let mut prover_acc = ProverOpeningAccumulator::<Fr>::new(0);
         let mut verifier_acc = VerifierOpeningAccumulator::<Fr>::new(0, false);
@@ -452,7 +441,7 @@ mod tests {
         let num_vars = 1;
         let n = 2;
         let m = 2usize;
-        let c = Fr::rand(&mut rng);
+        let c_s: Vec<Fr> = (0..m).map(|_| Fr::rand(&mut rng)).collect();
         let t = vec![Fr::rand(&mut rng)];
 
         let mle_evals: Vec<Vec<Fr>> = (0..m)
@@ -467,11 +456,9 @@ mod tests {
             (0..n)
                 .map(|g| {
                     let mut inner = Fr::zero();
-                    let mut c_j = c;
                     for j in 0..m {
                         let v = mle_evals[j][g];
-                        inner += c_j * v * (Fr::one() - v);
-                        c_j *= c;
+                        inner += c_s[j] * v * (Fr::one() - v);
                     }
                     let eq_t_g = if g == 0 { eq_t_0 } else { eq_t_1 };
                     let om0_g = if g == 0 { om0_0 } else { om0_1 };
@@ -481,16 +468,16 @@ mod tests {
         };
 
         let prover =
-            BooleanityEqSumcheckProver::<Fr>::new(num_vars, mle_evals.clone(), c, t.clone());
+            BooleanityEqSumcheckProver::<Fr>::new(num_vars, mle_evals.clone(), c_s.clone(), t.clone());
         assert_eq!(prover.params.initial_claim.unwrap(), prover_claim);
 
         let verifier =
-            BooleanityEqSumcheckVerifier::<Fr>::new(num_vars, mle_evals.clone(), c, t.clone());
+            BooleanityEqSumcheckVerifier::<Fr>::new(num_vars, mle_evals.clone(), c_s.clone(), t.clone());
         assert_eq!(verifier.params.initial_claim.unwrap(), prover_claim);
 
         // Full prove/verify with one variable
         let mut prover =
-            BooleanityEqSumcheckProver::<Fr>::new(num_vars, mle_evals.clone(), c, t.clone());
+            BooleanityEqSumcheckProver::<Fr>::new(num_vars, mle_evals.clone(), c_s.clone(), t.clone());
         let mut prover_acc = ProverOpeningAccumulator::<Fr>::new(0);
         let mut verifier_acc = VerifierOpeningAccumulator::<Fr>::new(0, false);
         let mut transcript_p_inner = Transcript::new(b"one_var");
@@ -499,7 +486,7 @@ mod tests {
         let mut transcript_v = MerlinSumcheckTranscript::new(&mut transcript_v_inner);
         let (proof, _challenges, _) =
             BatchedSumcheck::prove(vec![&mut prover], &mut prover_acc, &mut transcript_p);
-        let verifier = BooleanityEqSumcheckVerifier::<Fr>::new(num_vars, mle_evals, c, t);
+        let verifier = BooleanityEqSumcheckVerifier::<Fr>::new(num_vars, mle_evals, c_s, t);
         let result = BatchedSumcheck::verify_standard::<Fr, _>(
             &proof,
             vec![&verifier],
@@ -515,7 +502,7 @@ mod tests {
         let num_vars = 2;
         let n = 4;
         let m = 2usize;
-        let c = Fr::rand(&mut rng);
+        let c_s: Vec<Fr> = (0..m).map(|_| Fr::rand(&mut rng)).collect();
         let t = vec![Fr::rand(&mut rng), Fr::rand(&mut rng)];
 
         let mle_evals: Vec<Vec<Fr>> = (0..m)
@@ -523,8 +510,8 @@ mod tests {
             .collect();
 
         let mut prover =
-            BooleanityEqSumcheckProver::<Fr>::new(num_vars, mle_evals.clone(), c, t.clone());
-        let verifier = BooleanityEqSumcheckVerifier::<Fr>::new(num_vars, mle_evals.clone(), c, t);
+            BooleanityEqSumcheckProver::<Fr>::new(num_vars, mle_evals.clone(), c_s.clone(), t.clone());
+        let verifier = BooleanityEqSumcheckVerifier::<Fr>::new(num_vars, mle_evals.clone(), c_s, t);
 
         let mut prover_acc = ProverOpeningAccumulator::<Fr>::new(0);
         let mut verifier_acc = VerifierOpeningAccumulator::<Fr>::new(0, false);
@@ -551,7 +538,7 @@ mod tests {
         let num_vars = 4;
         let n = 1 << num_vars;
         let m = 8usize;
-        let c = Fr::rand(&mut rng);
+        let c_s: Vec<Fr> = (0..m).map(|_| Fr::rand(&mut rng)).collect();
         let t_index = 7usize; // != 0, on hypercube
 
         let mle_evals: Vec<Vec<Fr>> = (0..m)
@@ -561,13 +548,13 @@ mod tests {
         let mut prover = BooleanityEqSumcheckProver::<Fr>::new_with_hypercube_point(
             num_vars,
             mle_evals.clone(),
-            c,
+            c_s.clone(),
             t_index,
         );
         let verifier = BooleanityEqSumcheckVerifier::<Fr>::new_with_hypercube_point(
             num_vars,
             mle_evals.clone(),
-            c,
+            c_s.clone(),
             t_index,
         );
 
@@ -592,11 +579,9 @@ mod tests {
 
         // When t is on hypercube, sum_x F(x) = F(t) = sum_{j=1}^m c^j * MLE[j](t)*(1-MLE[j](t))
         let mut expected_claim = Fr::zero();
-        let mut c_j = c;
         for j in 0..m {
             let v = mle_evals[j][t_index];
-            expected_claim += c_j * v * (Fr::one() - v);
-            c_j *= c;
+            expected_claim += c_s[j] * v * (Fr::one() - v);
         }
         assert_eq!(
             prover.params.initial_claim.unwrap(),

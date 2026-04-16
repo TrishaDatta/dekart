@@ -1,4 +1,7 @@
 // Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
+
+// Copyright (c) Aptos Foundation
 // Licensed pursuant to the Innovation-Enabling Source Code License.
 //
 //! Sumcheck for the same polynomial as [super::booleanity_eq], but with **LSB-first** variable order.
@@ -53,8 +56,6 @@ impl<F: SumcheckField> SumcheckInstanceParams<F> for BooleanityEqLsbParams<F> {
 pub struct BooleanityEqSumcheckProverLSB<F: SumcheckField> {
     params: BooleanityEqLsbParams<F>,
     polys: Vec<DensePolynomial<F>>,
-    #[allow(dead_code)]
-    c: F,
     c_powers: Vec<F>,
     #[allow(dead_code)]
     t: Vec<F>,
@@ -67,7 +68,7 @@ pub struct BooleanityEqSumcheckProverLSB<F: SumcheckField> {
 impl<F: SumcheckField> BooleanityEqSumcheckProverLSB<F> {
     /// Build prover from m MLEs (each 2^n evals), scalar c, and **t** (n field elements).
     /// Variable order: **first round = LSB** (eq_t(g) uses g_i = (g >> i) & 1).
-    pub fn new(num_vars: usize, mle_evals: Vec<Vec<F>>, c: F, t: Vec<F>) -> Self {
+    pub fn new(num_vars: usize, mle_evals: Vec<Vec<F>>, c_powers: Vec<F>, t: Vec<F>) -> Self {
         let n = 1 << num_vars;
         assert_eq!(t.len(), num_vars, "t must have length num_vars");
         assert!(!mle_evals.is_empty());
@@ -81,12 +82,12 @@ impl<F: SumcheckField> BooleanityEqSumcheckProverLSB<F> {
             .collect();
         let m = polys.len();
 
-        let mut c_powers = Vec::with_capacity(m);
+        /*let mut c_powers = Vec::with_capacity(m);
         let mut c_j = c;
         for _ in 0..m {
             c_powers.push(c_j);
             c_j *= c;
-        }
+        }*/
 
         // eq_t(g) = ∏_i (g_i ? t[i] : (1−t[i])) with g_i = LSB-first bit of g: bit i = (g >> i) & 1
         let eq_t_evals: Vec<F> = (0..n)
@@ -128,7 +129,6 @@ impl<F: SumcheckField> BooleanityEqSumcheckProverLSB<F> {
                 _marker: PhantomData,
             },
             polys,
-            c,
             c_powers,
             t,
             eq_t_evals,
@@ -142,7 +142,7 @@ impl<F: SumcheckField> BooleanityEqSumcheckProverLSB<F> {
     pub fn new_with_masking(
         num_vars: usize,
         mle_evals: Vec<Vec<F>>,
-        c: F,
+        c_s: Vec<F>,
         t: Vec<F>,
         alpha: F,
         g: MaskingPolynomial<F>,
@@ -153,7 +153,7 @@ impl<F: SumcheckField> BooleanityEqSumcheckProverLSB<F> {
             "masking polynomial degree must be <= {}",
             DEGREE
         );
-        let mut prover = Self::new(num_vars, mle_evals, c, t);
+        let mut prover = Self::new(num_vars, mle_evals, c_s, t);
         let claim_bool = prover.params.initial_claim.unwrap();
         let h_g = g.hypercube_sum();
         prover.params.initial_claim = Some(claim_bool + alpha * h_g);
@@ -169,7 +169,7 @@ impl<F: SumcheckField> BooleanityEqSumcheckProverLSB<F> {
     pub fn new_with_hypercube_point(
         num_vars: usize,
         mle_evals: Vec<Vec<F>>,
-        c: F,
+        c_s: Vec<F>,
         t_index: usize,
     ) -> Self {
         let n = 1 << num_vars;
@@ -183,7 +183,7 @@ impl<F: SumcheckField> BooleanityEqSumcheckProverLSB<F> {
                 }
             })
             .collect();
-        Self::new(num_vars, mle_evals, c, t)
+        Self::new(num_vars, mle_evals, c_s, t)
     }
 
     /// Round polynomial: pair (2b, 2b+1) for LSB binding (same as dkg (b<<1, (b<<1)+1)).
@@ -283,26 +283,24 @@ impl<F: SumcheckField> SumcheckInstanceProver<F> for BooleanityEqSumcheckProverL
 pub struct BooleanityEqSumcheckVerifierLSB<F: SumcheckField> {
     params: BooleanityEqLsbParams<F>,
     polys_evals: Option<Vec<Vec<F>>>,
-    #[allow(dead_code)]
-    c: F,
     c_powers: Option<Vec<F>>,
     t: Vec<F>,
 }
 
 impl<F: SumcheckField> BooleanityEqSumcheckVerifierLSB<F> {
-    pub fn new(num_rounds: usize, mle_evals: Vec<Vec<F>>, c: F, t: Vec<F>) -> Self {
+    pub fn new(num_rounds: usize, mle_evals: Vec<Vec<F>>, c_powers: Vec<F>, t: Vec<F>) -> Self {
         let n = 1 << num_rounds;
         assert_eq!(t.len(), num_rounds, "t must have length num_rounds");
         for evals in &mle_evals {
             assert_eq!(evals.len(), n);
         }
         let m = mle_evals.len();
-        let mut c_powers = Vec::with_capacity(m);
+        /*let mut c_powers = Vec::with_capacity(m);
         let mut c_j = c;
         for _ in 0..m {
             c_powers.push(c_j);
             c_j *= c;
-        }
+        }*/
         let polys: Vec<DensePolynomial<F>> = mle_evals
             .iter()
             .map(|evals| DensePolynomial::new(evals.clone()))
@@ -342,7 +340,6 @@ impl<F: SumcheckField> BooleanityEqSumcheckVerifierLSB<F> {
                 _marker: PhantomData,
             },
             polys_evals: Some(mle_evals),
-            c,
             c_powers: Some(c_powers),
             t,
         }
@@ -351,7 +348,7 @@ impl<F: SumcheckField> BooleanityEqSumcheckVerifierLSB<F> {
     pub fn new_with_hypercube_point(
         num_rounds: usize,
         mle_evals: Vec<Vec<F>>,
-        c: F,
+        c_s: Vec<F>,
         t_index: usize,
     ) -> Self {
         let n = 1 << num_rounds;
@@ -365,7 +362,7 @@ impl<F: SumcheckField> BooleanityEqSumcheckVerifierLSB<F> {
                 }
             })
             .collect();
-        Self::new(num_rounds, mle_evals, c, t)
+        Self::new(num_rounds, mle_evals, c_s, t)
     }
 
     fn eq_at_point(r: &[F::Challenge], t: &[F]) -> F {
@@ -450,14 +447,14 @@ pub struct BooleanityEqSumcheckVerifierLSBWithOpenings<F: SumcheckField> {
 impl<F: SumcheckField> BooleanityEqSumcheckVerifierLSBWithOpenings<F> {
     /// Create verifier with (num_rounds, c, t, initial_claim, openings).
     /// `openings` are the MLE evaluations at the sumcheck point (e.g. y_js from the proof).
-    pub fn new(num_rounds: usize, c: F, t: Vec<F>, initial_claim: F, openings: Vec<F>) -> Self {
-        Self::new_with_alpha_y_g(num_rounds, c, t, initial_claim, openings, None)
+    pub fn new(num_rounds: usize, c_s: Vec<F>, t: Vec<F>, initial_claim: F, openings: Vec<F>) -> Self {
+        Self::new_with_alpha_y_g(num_rounds, c_s, t, initial_claim, openings, None)
     }
 
     /// Same as `new` but with optional alpha * y_g added to expected output (for Dekart).
     pub fn new_with_alpha_y_g(
         num_rounds: usize,
-        c: F,
+        c_powers: Vec<F>,
         t: Vec<F>,
         initial_claim: F,
         openings: Vec<F>,
@@ -465,12 +462,12 @@ impl<F: SumcheckField> BooleanityEqSumcheckVerifierLSBWithOpenings<F> {
     ) -> Self {
         assert_eq!(t.len(), num_rounds, "t must have length num_rounds");
         let m = openings.len();
-        let mut c_powers = Vec::with_capacity(m);
+        /*let mut c_powers = Vec::with_capacity(m);
         let mut c_j = c;
         for _ in 0..m {
             c_powers.push(c_j);
             c_j *= c;
-        }
+        }*/
         Self {
             params: BooleanityEqLsbParams {
                 num_rounds,
@@ -547,7 +544,7 @@ mod tests {
         let num_vars = 4;
         let n = 1 << num_vars;
         let m = 8usize;
-        let c = Fr::rand(&mut rng);
+        let c_s: Vec<Fr> = (0..m).map(|_| Fr::rand(&mut rng)).collect();
         let t: Vec<Fr> = (0..num_vars).map(|_| Fr::rand(&mut rng)).collect();
 
         let mle_evals: Vec<Vec<Fr>> = (0..m)
@@ -555,9 +552,9 @@ mod tests {
             .collect();
 
         let mut prover =
-            BooleanityEqSumcheckProverLSB::<Fr>::new(num_vars, mle_evals.clone(), c, t.clone());
+            BooleanityEqSumcheckProverLSB::<Fr>::new(num_vars, mle_evals.clone(), c_s.clone(), t.clone());
         let verifier =
-            BooleanityEqSumcheckVerifierLSB::<Fr>::new(num_vars, mle_evals.clone(), c, t);
+            BooleanityEqSumcheckVerifierLSB::<Fr>::new(num_vars, mle_evals.clone(), c_s, t);
 
         let mut prover_acc = ProverOpeningAccumulator::<Fr>::new(0);
         let mut verifier_acc = VerifierOpeningAccumulator::<Fr>::new(0, false);
@@ -588,7 +585,7 @@ mod tests {
         let num_vars = 4;
         let n = 1 << num_vars;
         let m = 4usize;
-        let c = Fr::rand(&mut rng);
+        let c_s : Vec<Fr> = (0..m).map(|_| Fr::rand(&mut rng)).collect();
         let t_index = 7usize; // same point on the hypercube
         let t_msb: Vec<Fr> = (0..num_vars)
             .map(|i| {
@@ -613,9 +610,9 @@ mod tests {
             .collect();
 
         let prover_msb =
-            crate::sumcheck::BooleanityEqSumcheckProver::new(num_vars, mle_evals.clone(), c, t_msb);
+            crate::sumcheck::BooleanityEqSumcheckProver::new(num_vars, mle_evals.clone(), c_s.clone(), t_msb);
         let prover_lsb =
-            BooleanityEqSumcheckProverLSB::<Fr>::new(num_vars, mle_evals.clone(), c, t_lsb);
+            BooleanityEqSumcheckProverLSB::<Fr>::new(num_vars, mle_evals.clone(), c_s, t_lsb);
 
         let acc = ProverOpeningAccumulator::<Fr>::new(0);
         let claim_msb = prover_msb.get_params().input_claim(&acc);
@@ -633,7 +630,8 @@ mod tests {
         let num_vars = 4;
         let n = 1 << num_vars;
         let m = 8usize;
-        let c = Fr::rand(&mut rng);
+        let c_s : Vec<Fr> = (0..m).map(|_| Fr::rand(&mut rng)).collect();
+
         let t_index = 7usize;
 
         let mle_evals: Vec<Vec<Fr>> = (0..m)
@@ -643,13 +641,13 @@ mod tests {
         let mut prover = BooleanityEqSumcheckProverLSB::new_with_hypercube_point(
             num_vars,
             mle_evals.clone(),
-            c,
+            c_s.clone(),
             t_index,
         );
         let verifier = BooleanityEqSumcheckVerifierLSB::new_with_hypercube_point(
             num_vars,
             mle_evals.clone(),
-            c,
+            c_s.clone(),
             t_index,
         );
 
@@ -672,11 +670,9 @@ mod tests {
         assert!(result.is_ok());
 
         let mut expected_claim = Fr::zero();
-        let mut c_j = c;
         for j in 0..m {
             let v = mle_evals[j][t_index];
-            expected_claim += c_j * v * (Fr::one() - v);
-            c_j *= c;
+            expected_claim += c_s[j] * v * (Fr::one() - v);
         }
         assert_eq!(
             prover.params.initial_claim.unwrap(),
