@@ -260,8 +260,8 @@ impl<E: Pairing> traits::BatchedRangeProof<E> for Proof<E> {
         );
         <merlin::Transcript as RangeProof<E, Proof<E>>>::append_hypercube_sum(&mut trs, &self.H_g);
 
-        let c: E::ScalarField =
-            <merlin::Transcript as RangeProof<E, Proof<E>>>::challenge_scalar(&mut trs);
+        let c_s =
+            <merlin::Transcript as RangeProof<E, Proof<E>>>::challenge_point(&mut trs, ell);
         let alpha: E::ScalarField =
             <merlin::Transcript as RangeProof<E, Proof<E>>>::challenge_nonzero_scalar(&mut trs);
         let c_zc = <merlin::Transcript as RangeProof<E, Proof<E>>>::challenge_point(
@@ -270,7 +270,7 @@ impl<E: Pairing> traits::BatchedRangeProof<E> for Proof<E> {
         );
         #[cfg(feature = "range_proof_timing_multivariate")]
         print_cumulative(
-            "append commitments + challenges (c, alpha, c_zc)",
+            "append commitments + challenges (c_s, alpha, c_zc)",
             start.elapsed(),
         );
 
@@ -281,7 +281,7 @@ impl<E: Pairing> traits::BatchedRangeProof<E> for Proof<E> {
         let alpha_y_g = alpha * self.y_g;
         let verifier = BooleanityEqSumcheckVerifierLSBWithOpenings::new_with_alpha_y_g(
             num_vars,
-            c,
+            c_s.clone(),
             c_zc.clone(),
             claimed_sum,
             self.y_js[..ell as usize].to_vec(),
@@ -305,7 +305,7 @@ impl<E: Pairing> traits::BatchedRangeProof<E> for Proof<E> {
             anyhow::anyhow!("sumcheck verify: {:?}", e)
         })?;
         let x: Vec<E::ScalarField> = r_sumcheck;
-        let subclaim_expected_eval = {
+
             let eq_c_zc_at_x: E::ScalarField = (0..x.len())
                 .map(|i| {
                     let c_i = c_zc[i];
@@ -317,13 +317,10 @@ impl<E: Pairing> traits::BatchedRangeProof<E> for Proof<E> {
                 x.iter().map(|&xi| E::ScalarField::ONE - xi).product();
             let z_0_at_x = E::ScalarField::ONE - eq_zero_at_x;
             let mut sum_c_j = E::ScalarField::ZERO;
-            let mut c_pow = c;
-            for &y_j in self.y_js.iter().take(ell as usize) {
-                sum_c_j += c_pow * y_j * (E::ScalarField::ONE - y_j);
-                c_pow *= c;
+            for (j, &y_j) in self.y_js.iter().take(ell as usize).enumerate() {
+                sum_c_j += c_s[j] * y_j * (E::ScalarField::ONE - y_j);
             }
-            sum_c_j * eq_c_zc_at_x * z_0_at_x + alpha * self.y_g
-        };
+        let  subclaim_expected_eval =   sum_c_j * eq_c_zc_at_x * z_0_at_x + alpha * self.y_g;
 
         #[cfg(feature = "range_proof_timing_multivariate")]
         print_cumulative("sumcheck verify", start.elapsed());
@@ -345,13 +342,7 @@ impl<E: Pairing> traits::BatchedRangeProof<E> for Proof<E> {
         let eq_zero_at_x: E::ScalarField = x.iter().map(|&xi| E::ScalarField::ONE - xi).product();
         let Z_0_at_x = E::ScalarField::ONE - eq_zero_at_x;
 
-        let mut sum_c_j_y_j_one_minus_y_j = E::ScalarField::ZERO;
-        let mut c_pow = c;
-        for &y_j in self.y_js.iter().take(ell as usize) {
-            sum_c_j_y_j_one_minus_y_j += c_pow * y_j * (E::ScalarField::ONE - y_j);
-            c_pow *= c;
-        }
-        let lhs_4a = sum_c_j_y_j_one_minus_y_j * eq_c_zc_at_x * Z_0_at_x + alpha * self.y_g;
+        let lhs_4a = sum_c_j * eq_c_zc_at_x * Z_0_at_x + alpha * self.y_g;
         if lhs_4a != subclaim_expected_eval {
             return Err(anyhow::anyhow!(
                 "Step 4a check failed: (sum c^j y_j(1-y_j)) * eq_c_zc(x) * Z_0(x) + alpha*y_g != h(x). \
@@ -665,8 +656,6 @@ pub fn prove_impl<E: Pairing, R: RngCore + CryptoRng>(
         E::ScalarField,
     ) = zksc_send_mask(&srs, 4, num_vars, rng);
 
-    //mytodo: make sure all appropriate things are appended to fiat-shamir transcript
-
     let n_f = f_j_comms_proj.len();
     let mut combined = f_j_comms_proj;
     combined.extend(&g_i_commitments_proj);
@@ -698,10 +687,9 @@ pub fn prove_impl<E: Pairing, R: RngCore + CryptoRng>(
 
     #[cfg(feature = "range_proof_timing_multivariate")]
     let start = Instant::now();
-    // mytodo: change this to c_1,...,c_m instead of c^i
     // Step 5a–5c: Verifier challenges c, alpha; eq_point t; run sumcheck on transcript with linear term (f - sum 2^{j-1} f_j) + sum c^j f_j(f_j-1)
-    let c: E::ScalarField =
-        <merlin::Transcript as RangeProof<E, Proof<E>>>::challenge_scalar(&mut trs);
+    let c_s =
+        <merlin::Transcript as RangeProof<E, Proof<E>>>::challenge_point(&mut trs, ell);
     let alpha: E::ScalarField =
         <merlin::Transcript as RangeProof<E, Proof<E>>>::challenge_nonzero_scalar(&mut trs);
     #[cfg(feature = "range_proof_timing_multivariate")]
@@ -716,7 +704,7 @@ pub fn prove_impl<E: Pairing, R: RngCore + CryptoRng>(
         g_is.clone(),
         num_vars,
         ell as usize,
-        c,
+        c_s,
         alpha,
         &f_j_evals,
         #[cfg(feature = "range_proof_timing_multivariate")]
@@ -896,7 +884,7 @@ fn zkzc_send_polys<E: Pairing>(
     g_is: Vec<Vec<E::ScalarField>>,
     num_vars: u8,
     ell: usize,
-    c: E::ScalarField,
+    c_s: Vec<E::ScalarField>,
     alpha: E::ScalarField,
     hat_f_j_evals: &[Vec<E::ScalarField>],
     mut _timing: Option<&mut dyn FnMut(&str, std::time::Duration)>,
@@ -923,7 +911,7 @@ fn zkzc_send_polys<E: Pairing>(
     let mle_evals: Vec<Vec<E::ScalarField>> =
         hat_f_j_evals[..ell].iter().map(|v| v.to_vec()).collect();
     let mut prover =
-        BooleanityEqSumcheckProverLSB::new_with_masking(nv, mle_evals, c, c_zc, alpha, g);
+        BooleanityEqSumcheckProverLSB::new_with_masking(nv, mle_evals, c_s, c_zc, alpha, g);
     #[cfg(feature = "range_proof_timing_multivariate")]
     if let Some(ref mut f) = _timing {
         f(
