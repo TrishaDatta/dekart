@@ -1,4 +1,4 @@
-#!/bin/bash
+!/bin/bash
 
 set -e
 
@@ -20,8 +20,6 @@ if [ "$ANS" == "y" ]; then
     rm -rf $repo_root/target/criterion/dekart*
 
     cd $repo_root/crates/aptos-dkg/
-    echo "Benchmarking univariate DeKART..."
-    RAYON_NUM_THREADS=1 cargo bench --bench range_proof -- dekart-rs/bls12-381
     echo "Benchmarking multivariate DeKART..."
     RAYON_NUM_THREADS=1 cargo bench --bench range_proof -- dekart-multivar/bls12-381
     cd - &>/dev/null
