@@ -15,7 +15,7 @@ use crate::{
         EvaluationSet,
     },
     pvss::chunky::chunked_elgamal::correlated_randomness,
-    range_proofs::{dekart_univariate_v2::two_term_msm, traits, PublicStatement},
+    range_proofs::{two_term_msm, traits, PublicStatement},
     sigma_protocol::{
         homomorphism::{Trait as _, TrivialShape},
         Trait as _,
@@ -696,7 +696,6 @@ pub fn prove_impl<E: Pairing, R: RngCore + CryptoRng>(
     print_cumulative("transcript challenges (c, alpha)", start.elapsed());
 
     // TODO: define hat(f) hier ipv in zkzc_send_polys()
-    // mytodo: check sum-check implementation (including fiat-shamir implementation)
     #[cfg(feature = "range_proof_timing_multivariate")]
     let start = Instant::now();
     let sumcheck_proof = zkzc_send_polys::<E>(
@@ -1012,6 +1011,7 @@ fn zksc_send_mask<E: Pairing, R: RngCore + CryptoRng>(
 
     (g_is, g_comm, r_is, total_sum)
 }
+
 
 #[cfg(test)]
 mod tests {

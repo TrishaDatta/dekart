@@ -9,6 +9,7 @@ pub mod dekart_multivariate;
 pub mod dekart_univariate_v2;
 pub mod scalars_to_bits;
 pub mod traits;
+pub mod two_term_msm;
 
 // Both DeKART multivariate and univariate use the same "public statement" struct.
 #[derive(CanonicalSerialize)]
